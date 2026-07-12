@@ -1,3 +1,4 @@
+# /etc/systemd/system/friend-report.service
 [Unit]
 Description=Daily friend (collab) activity report to ntfy
 

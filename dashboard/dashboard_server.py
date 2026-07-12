@@ -94,6 +94,16 @@ def svc_active(name, user=False):
     return _run(cmd) == "active"
 
 
+def failed_units():
+    """Count systemd units in the failed state (system + user) — a generic net
+    that catches ANY unit failing, not just the named ones."""
+    n = 0
+    for cmd in (["systemctl", "--failed", "--no-legend", "--plain"],
+                ["systemctl", "--user", "--failed", "--no-legend", "--plain"]):
+        n += sum(1 for line in _run(cmd).splitlines() if line.strip())
+    return n
+
+
 def cpu_temp():
     """CPU package temperature in C (AMD k10temp / Intel coretemp), or None."""
     base = "/sys/class/hwmon"
@@ -239,12 +249,22 @@ def build_status():
     act = activity()
     pw = power()
     queue["current"] = act.get("current_job")
+    # Long-running services + the alerting/protection safety-net (so a dead
+    # watchdog/heartbeat is VISIBLE). Oneshots (fan-curve/battery-cap/...) are
+    # excluded on purpose: they exit after applying, so is-active would false-red.
     services = [
         {"name": "transcribe-queue", "active": svc_active("transcribe-queue.service", user=True)},
+        {"name": "watchdog", "active": svc_active("health-watchdog.timer", user=True)},
+        {"name": "heartbeat", "active": svc_active("heartbeat.timer", user=True)},
         {"name": "netdata", "active": svc_active("netdata")},
         {"name": "tailscaled", "active": svc_active("tailscaled")},
+        {"name": "firewall", "active": svc_active("ufw")},
+        {"name": "fail2ban", "active": svc_active("fail2ban")},
     ]
+    fails = failed_units()
     alerts = []
+    if fails > 0:
+        alerts.append({"level": "crit", "msg": f"{fails} systemd unit(s) failed"})
     if disk["pct"] >= 90:
         alerts.append({"level": "crit", "msg": f"Disk {disk['pct']}%"})
     if r["pct"] >= 92:
@@ -266,7 +286,7 @@ def build_status():
             "load": [float(x) for x in open("/proc/loadavg").read().split()[:3]],
             "ram": r, "disk": disk, "gpu": g, "power": pw, "activity": act,
             "tailscale": {"status": "connected" if ts_ok else "down", "ip": ts_ip},
-            "queue": queue, "services": services, "alerts": alerts}
+            "queue": queue, "services": services, "failed_units": fails, "alerts": alerts}
 
 
 # 2s snapshot cache: build_status() forks several subprocesses; this caps the

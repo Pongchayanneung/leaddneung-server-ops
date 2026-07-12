@@ -44,3 +44,11 @@ done
 
 # tailscale link
 tailscale status >/dev/null 2>&1 && clear_state ts || alert ts urgent "leaddneung: tailscale down" "Tailscale not connected."
+
+# ANY systemd unit in failed state (generic net beyond the named checks above)
+FAILED=$(( $(systemctl --failed --no-legend --plain 2>/dev/null | grep -c .) + $(systemctl --user --failed --no-legend --plain 2>/dev/null | grep -c .) ))
+if [ "$FAILED" -gt 0 ]; then
+  alert failedunits high "leaddneung: ${FAILED} unit(s) failed" "${FAILED} systemd unit(s) entered failed state — run: systemctl --failed"
+else
+  clear_state failedunits
+fi
