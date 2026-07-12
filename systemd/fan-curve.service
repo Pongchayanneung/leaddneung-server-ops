@@ -1,0 +1,9 @@
+# /etc/systemd/system/fan-curve.service
+[Unit]
+Description=ASUS optimized fan curve (quiet idle, aggressive load)
+After=multi-user.target
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/fan-curve.sh
+[Install]
+WantedBy=multi-user.target

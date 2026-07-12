@@ -1,0 +1,10 @@
+[Unit]
+Description=leaddneung custom status dashboard (:8080)
+After=network.target
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 %h/dashboard/dashboard_server.py
+Restart=always
+RestartSec=3
+[Install]
+WantedBy=default.target

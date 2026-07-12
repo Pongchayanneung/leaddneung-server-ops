@@ -1,0 +1,5 @@
+[Unit]
+Description=leaddneung health watchdog (ntfy alerts)
+[Service]
+Type=oneshot
+ExecStart=%h/transcribe-opt/health-watchdog.sh

@@ -1,0 +1,78 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>leaddneung · command console</title>
+<style>
+  :root{--bg:#0a0e12;--panel:#121820;--line:#1f2933;--txt:#c9d4e0;--dim:#6b7a8d;
+        --green:#3ddc84;--red:#ff5470;--amber:#ffb454;--mono:ui-monospace,"SF Mono","JetBrains Mono","Cascadia Code",monospace}
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--txt);font-family:var(--mono);font-size:14px;line-height:1.5;
+       padding:clamp(1rem,3vw,2.5rem);max-width:920px;margin-inline:auto}
+  h1{font-size:1.3rem;margin:0 0 .2rem;letter-spacing:.02em}
+  h1 .caret{color:var(--green)}
+  .sub{color:var(--dim);margin:0 0 1.2rem}
+  a{color:var(--green)}
+  .warn{border:1px solid var(--amber);color:var(--amber);border-radius:8px;padding:.6rem .9rem;margin-bottom:1rem;font-size:.85rem}
+  label{display:block;color:var(--dim);font-size:.78rem;text-transform:uppercase;letter-spacing:.08em;margin:.9rem 0 .3rem}
+  input,textarea{width:100%;background:var(--panel);color:var(--txt);border:1px solid var(--line);border-radius:8px;
+        padding:.7rem .8rem;font-family:var(--mono);font-size:14px}
+  textarea{min-height:90px;resize:vertical}
+  .row{display:flex;gap:.6rem;align-items:center;margin-top:.9rem;flex-wrap:wrap}
+  button{background:var(--green);color:#04140a;border:0;border-radius:8px;padding:.7rem 1.4rem;font-weight:700;
+        font-family:var(--mono);cursor:pointer;font-size:14px}
+  button:disabled{opacity:.5;cursor:wait}
+  button.ghost{background:transparent;color:var(--dim);border:1px solid var(--line);font-weight:400}
+  .status{color:var(--dim);font-size:.85rem}
+  pre{background:#05080b;border:1px solid var(--line);border-radius:8px;padding:1rem;white-space:pre-wrap;word-break:break-word;
+       min-height:120px;margin-top:1rem;overflow-x:auto;max-height:55vh;overflow-y:auto}
+  .foot{color:var(--dim);font-size:.78rem;margin-top:1.4rem;border-top:1px solid var(--line);padding-top:.8rem}
+</style>
+</head>
+<body>
+  <h1>leaddneung<span class="caret">_</span> · command console</h1>
+  <p class="sub">Type an instruction; it runs <code>claude -p</code> on the server and returns the result.</p>
+  <div class="warn">⚠ FULL AUTONOMY — commands execute immediately with no confirmation. Bounded to what user <b>neung</b> can do without a sudo password. Kill switch: <code>rm ~/dashboard/COMMAND_ENABLED</code> on the server.</div>
+
+  <label for="secret">Access token</label>
+  <input id="secret" type="password" placeholder="paste your command secret" autocomplete="off">
+  <label for="msg">Instruction</label>
+  <textarea id="msg" placeholder="e.g. why is the transcribe-queue service using so much memory? check and report."></textarea>
+  <div class="row">
+    <button id="run">Run</button>
+    <button id="clear" class="ghost">Clear</button>
+    <span id="status" class="status"></span>
+  </div>
+  <pre id="out">(output appears here)</pre>
+  <div class="foot">Read-only status: <a href="/">dashboard</a> · <a href="/netdata/">netdata</a>. Every command is audit-logged to <code>~/dashboard/command-audit.log</code>.</div>
+
+<script>
+  const $ = id => document.getElementById(id);
+  const secretEl = $("secret"), msgEl = $("msg"), out = $("out"), status = $("status"), runBtn = $("run");
+  // remember token locally (this device only)
+  secretEl.value = localStorage.getItem("cmd_secret") || "";
+  secretEl.addEventListener("change", () => localStorage.setItem("cmd_secret", secretEl.value));
+  $("clear").addEventListener("click", () => { out.textContent = "(output appears here)"; status.textContent = ""; });
+
+  async function run(){
+    const message = msgEl.value.trim();
+    if(!message){ status.textContent = "enter an instruction"; return; }
+    if(!secretEl.value){ status.textContent = "enter your access token"; return; }
+    runBtn.disabled = true; status.textContent = "running… (up to 3 min)"; out.textContent = "…";
+    const t0 = Date.now();
+    try{
+      const res = await fetch("/command", {method:"POST", headers:{"Content-Type":"application/json"},
+        body: JSON.stringify({secret: secretEl.value, message})});
+      const data = await res.json();
+      const secs = ((Date.now()-t0)/1000).toFixed(0);
+      if(res.ok){ out.textContent = data.output || "(no output)"; status.textContent = `done in ${secs}s (exit ${data.exit})`; }
+      else { out.textContent = data.error || "error"; status.textContent = `HTTP ${res.status} · ${secs}s`; }
+    }catch(err){ out.textContent = String(err); status.textContent = "request failed"; }
+    finally{ runBtn.disabled = false; }
+  }
+  runBtn.addEventListener("click", run);
+  msgEl.addEventListener("keydown", e => { if((e.metaKey||e.ctrlKey) && e.key === "Enter") run(); });
+</script>
+</body>
+</html>

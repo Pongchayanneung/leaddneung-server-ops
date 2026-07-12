@@ -1,0 +1,6 @@
+# /etc/systemd/system/tailscale-watchdog.service
+[Unit]
+Description=Restart tailscale if it drops
+[Service]
+Type=oneshot
+ExecStart=/bin/bash -c 'tailscale status >/dev/null 2>&1 || (systemctl restart tailscaled; sleep 3; tailscale up 2>/dev/null || true)'

@@ -1,0 +1,13 @@
+# secrets & runtime state — never commit
+config.sh
+.command_secret
+COMMAND_ENABLED
+command-audit.log
+*.pw
+.pw
+backup-*/
+*.log
+
+# python
+__pycache__/
+*.pyc

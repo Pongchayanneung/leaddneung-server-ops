@@ -1,0 +1,6 @@
+[Unit]
+Description=Daily friend (collab) activity report to ntfy
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/friend-report.sh

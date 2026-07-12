@@ -1,0 +1,21 @@
+[Unit]
+Description=Resident Thai transcription daemon (faster-whisper large-v3)
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/transcribe-opt
+
+# faster-whisper (ctranslate2) loads libcublas.so.12 / libcudnn.so.* from the
+# pip CUDA wheels; those dirs must be on LD_LIBRARY_PATH at process start.
+Environment="LD_LIBRARY_PATH=%h/transcribe-env/lib/python3.12/site-packages/nvidia/cublas/lib:%h/transcribe-env/lib/python3.12/site-packages/nvidia/cudnn/lib:${LD_LIBRARY_PATH}"
+Environment="OMP_WAIT_POLICY=PASSIVE"
+Environment="OMP_NUM_THREADS=4"
+
+ExecStart=%h/transcribe-env/bin/python %h/transcribe-opt/queue_daemon.py
+
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=default.target

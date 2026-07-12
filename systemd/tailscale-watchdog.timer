@@ -1,0 +1,8 @@
+# /etc/systemd/system/tailscale-watchdog.timer
+[Unit]
+Description=tailscale watchdog every 2 min
+[Timer]
+OnBootSec=60
+OnUnitActiveSec=120
+[Install]
+WantedBy=timers.target

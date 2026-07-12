@@ -1,0 +1,6 @@
+[Unit]
+Description=leaddneung proof-of-life heartbeat to ntfy
+
+[Service]
+Type=oneshot
+ExecStart=/home/neung/transcribe-opt/heartbeat.sh

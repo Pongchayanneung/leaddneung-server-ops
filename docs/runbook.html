@@ -1,0 +1,129 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>leaddneung · away runbook</title>
+<style>
+  :root{
+    --bg:#0a0e12; --panel:#121820; --panel2:#0d131a; --line:#1f2933;
+    --txt:#c9d4e0; --dim:#7a8a9d; --green:#3ddc84; --red:#ff5470; --amber:#ffb454; --blue:#5aa9ff;
+    --mono:ui-monospace,"SF Mono","JetBrains Mono","Cascadia Code",monospace;
+    --sans:-apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-serif;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--txt);font-family:var(--sans);
+       font-size:15px;line-height:1.55;padding:clamp(1rem,4vw,2rem);max-width:680px;margin-inline:auto}
+  header{border-bottom:1px solid var(--line);padding-bottom:1rem;margin-bottom:1.4rem}
+  h1{font-family:var(--mono);font-size:1.35rem;margin:0;letter-spacing:.01em}
+  h1 .c{color:var(--green)}
+  .tag{display:inline-block;font-family:var(--mono);font-size:.7rem;color:var(--dim);
+       border:1px solid var(--line);border-radius:999px;padding:.15rem .6rem;margin-top:.5rem}
+  h2{font-size:.78rem;text-transform:uppercase;letter-spacing:.12em;color:var(--dim);
+     margin:1.8rem 0 .7rem;font-weight:600}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:14px;
+        padding:1rem 1.1rem;margin-bottom:.9rem}
+  .card.hi{border-color:color-mix(in oklab,var(--green) 45%,var(--line))}
+  .card.warn{border-color:color-mix(in oklab,var(--amber) 40%,var(--line))}
+  .big-link{display:block;background:var(--green);color:#04140a;text-decoration:none;
+        font-family:var(--mono);font-weight:800;font-size:1.15rem;text-align:center;
+        border-radius:12px;padding:1rem;letter-spacing:.02em}
+  .big-link .s{display:block;font-size:.72rem;font-weight:500;opacity:.75;margin-top:.25rem;letter-spacing:.04em}
+  a{color:var(--green)}
+  code,.mono{font-family:var(--mono);font-size:.86em}
+  .k{color:var(--blue)}
+  .step{display:flex;gap:.7rem;align-items:flex-start;margin:.55rem 0}
+  .num{flex:0 0 1.5rem;height:1.5rem;border-radius:50%;background:var(--panel2);border:1px solid var(--line);
+       color:var(--green);font-family:var(--mono);font-size:.8rem;display:grid;place-items:center;margin-top:.1rem}
+  pre{background:var(--panel2);border:1px solid var(--line);border-radius:10px;padding:.7rem .8rem;
+      overflow-x:auto;font-family:var(--mono);font-size:.82rem;margin:.5rem 0;color:#dbe6f0}
+  .row{display:flex;gap:.6rem;flex-wrap:wrap;margin:.3rem 0}
+  .pill{font-family:var(--mono);font-size:.78rem;padding:.25rem .55rem;border-radius:8px;border:1px solid var(--line);background:var(--panel2)}
+  .dot{display:inline-block;width:.6rem;height:.6rem;border-radius:50%;margin-right:.45rem;vertical-align:middle}
+  .g{background:var(--green)} .a{background:var(--amber)} .r{background:var(--red)}
+  strong{color:#eaf1f8}
+  .lead{color:var(--dim);font-size:.9rem;margin:.2rem 0 0}
+  ul{margin:.4rem 0;padding-left:1.1rem} li{margin:.25rem 0}
+  footer{color:var(--dim);font-size:.75rem;font-family:var(--mono);margin-top:2rem;
+         border-top:1px solid var(--line);padding-top:.9rem}
+</style>
+</head>
+<body>
+<header>
+  <h1>leaddneung<span class="c">_</span> away runbook</h1>
+  <p class="lead">Everything you need to watch the GPU server from your phone while you're away.</p>
+  <span class="tag">generated 2026-07-11 · valid until config changes</span>
+</header>
+
+<h2>① The one link — live status</h2>
+<a class="big-link" href="http://leaddneung:8080">http://leaddneung:8080<span class="s">GPU · CPU · RAM · disk · services · queue · auto-refreshes</span></a>
+<div class="card">
+  <div class="row">
+    <span class="pill">needs Tailscale <strong>ON</strong> on your phone</span>
+  </div>
+  <p class="lead">If the name doesn't load, use the raw IP (works without MagicDNS):</p>
+  <pre>http://YOUR_TAILSCALE_IP:8080</pre>
+</div>
+
+<h2>② Do this before you leave (2 min)</h2>
+<div class="card hi">
+  <div class="step"><div class="num">1</div><div><strong>Tailscale app</strong> installed &amp; connected on your phone. <span class="lead">(Your iPhone-13 is already on the tailnet — just keep it signed in.)</span></div></div>
+  <div class="step"><div class="num">2</div><div><strong>ntfy app</strong> → subscribe to topic:<pre>YOUR_NTFY_TOPIC</pre><span class="lead">This is how alerts reach you. Two test pushes are already waiting in it — if you see them, it works.</span></div></div>
+  <div class="step"><div class="num">3</div><div>Save the <strong>console secret</strong> to your phone now (needed to send fix-commands):<pre>ssh leaddneung cat ~/dashboard/.command_secret</pre></div></div>
+</div>
+
+<h2>③ What the alerts mean</h2>
+<div class="card">
+  <p><span class="dot g"></span><strong>"leaddneung alive"</strong> at <span class="mono">08:00</span> &amp; <span class="mono">20:00</span> — healthy heartbeat. Normal.</p>
+  <p><span class="dot a"></span><strong>"X auto-recovered"</strong> — a service crashed and the watchdog restarted it. No action needed; just FYI.</p>
+  <p><span class="dot r"></span><strong>"X DOWN — restart FAILED"</strong> / <strong>disk / RAM / GPU temp</strong> — needs you. See §④.</p>
+  <p><span class="dot r"></span><strong>No heartbeat at 08:00 or 20:00</strong> = the server or your home network is dead (likely power/internet outage at home). Nothing you can do remotely; check when back or ask someone home to power-cycle.</p>
+</div>
+
+<h2>④ Fix it from your phone</h2>
+<div class="card">
+  <p class="lead">Open the command console (same one link + <span class="mono">/console</span>), paste your secret, type plain English:</p>
+  <a class="big-link" style="font-size:1rem" href="http://leaddneung:8080/console">http://leaddneung:8080/console</a>
+  <p class="lead" style="margin-top:.7rem">Examples that work:</p>
+  <ul>
+    <li><span class="mono">restart the transcribe-queue service and confirm it's up</span></li>
+    <li><span class="mono">disk is filling — find the biggest files under /home and /var</span></li>
+    <li><span class="mono">why is GPU temperature high? show nvidia-smi and fan status</span></li>
+  </ul>
+  <p class="lead"><strong>Note:</strong> the console runs on a shared Claude account — if it says "limit reached," wait for the reset. Most crashes self-heal without it.</p>
+</div>
+
+<h2>⑤ Already protecting itself (you don't need to do anything)</h2>
+<div class="card">
+  <ul>
+    <li><strong>Auto-restart</strong> — dashboard + transcribe-queue restart on crash (<span class="mono">Restart=always</span>), and a watchdog double-checks every 3 min.</li>
+    <li><strong>Survives reboot</strong> — proven: the box rebooted tonight and every service came back on its own (linger + enabled).</li>
+    <li><strong>Won't fill disk</strong> — journal capped 300M, app logs rotate. Currently 29% used.</li>
+    <li><strong>Stays cool &amp; safe</strong> — fan curve (GPU ~66°C under load), battery capped 80%, GPU persistence on.</li>
+    <li><strong>Locked down</strong> — firewall = tailnet-only, SSH key-only, fail2ban + auto-security-updates on.</li>
+  </ul>
+</div>
+
+<h2>⑥ Emergency controls</h2>
+<div class="card warn">
+  <p><strong>Kill the command console</strong> (if you ever suspect misuse):<pre>ssh leaddneung rm ~/dashboard/COMMAND_ENABLED</pre>Re-enable later: <span class="mono">touch ~/dashboard/COMMAND_ENABLED</span></p>
+  <p><strong>See what commands ran:</strong><pre>ssh leaddneung cat ~/dashboard/command-audit.log</pre></p>
+  <p class="lead">Note: the console &amp; dashboard are reachable by any device on your tailnet — which is <strong>shared with a collaborator</strong>. The console is secret-gated so only you can run commands; the dashboard is read-only metrics.</p>
+</div>
+
+<h2>⑦ Optional 2-min upgrade — active dead-man</h2>
+<div class="card">
+  <p class="lead">The heartbeat tells you it's alive, but you have to <em>notice</em> a missing one. For an alert that fires <strong>automatically</strong> when the server goes silent:</p>
+  <ul>
+    <li>Make a free check at <span class="mono">healthchecks.io</span>, copy its ping URL.</li>
+    <li>Tell the console: <span class="mono">"add a systemd timer that curls &lt;URL&gt; every 5 min"</span>.</li>
+    <li>healthchecks.io then emails/pushes you the moment pings stop.</li>
+  </ul>
+</div>
+
+<footer>
+  leaddneung · RTX 3070 · Tailscale YOUR_TAILSCALE_IP · topic YOUR_NTFY_TOPIC<br>
+  monitor: :8080 · fix: :8080/console · deep charts: :19999 (Netdata)
+</footer>
+</body>
+</html>

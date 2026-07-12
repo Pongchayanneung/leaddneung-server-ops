@@ -1,0 +1,1167 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<meta name="color-scheme" content="dark" />
+<title>leaddneung · GPU node telemetry</title>
+<style>
+  /* ============================================================
+     leaddneung — GPU compute node telemetry
+     Aesthetic: instrument cluster / mission-control panel
+     Dark graphite, signal-green primary, semantic heat scale.
+     Self-contained. No external assets (strict CSP safe).
+     ============================================================ */
+
+  :root {
+    /* --- surfaces (graphite, cool undertone) --- */
+    --bg-0: #080a0d;
+    --bg-1: #0d1015;
+    --surface: #121721;
+    --surface-2: #171d29;
+    --surface-raised: #1b2331;
+    --hairline: #26303f;
+    --hairline-soft: #1c2431;
+
+    /* --- ink --- */
+    --ink-hi: #eef4fb;
+    --ink: #c2ccd9;
+    --ink-dim: #8592a3;
+    --ink-faint: #56616f;
+
+    /* --- signal palette --- */
+    --signal: #35e0a1;         /* nominal green */
+    --signal-glow: rgba(53, 224, 161, 0.35);
+    --amber: #f5b544;          /* elevated */
+    --amber-glow: rgba(245, 181, 68, 0.32);
+    --crit: #ff5470;           /* critical */
+    --crit-glow: rgba(255, 84, 112, 0.32);
+    --cyan: #4fc8ff;           /* neutral data accent */
+    --violet: #9b8cff;
+
+    /* --- type --- */
+    --mono: ui-monospace, "SF Mono", "JetBrains Mono", "Cascadia Code",
+            "Menlo", "DejaVu Sans Mono", "Consolas", monospace;
+    --sans: ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI",
+            system-ui, sans-serif;
+
+    /* --- rhythm --- */
+    --gap: clamp(0.75rem, 0.4rem + 1.4vw, 1.15rem);
+    --radius: 14px;
+    --radius-sm: 9px;
+    --ease: cubic-bezier(0.16, 1, 0.3, 1);
+    --dur: 620ms;
+  }
+
+  * { box-sizing: border-box; }
+
+  html { -webkit-text-size-adjust: 100%; }
+
+  body {
+    margin: 0;
+    min-height: 100vh;
+    font-family: var(--sans);
+    color: var(--ink);
+    background:
+      radial-gradient(1100px 620px at 82% -8%, rgba(53, 224, 161, 0.08), transparent 60%),
+      radial-gradient(900px 500px at 6% 4%, rgba(79, 200, 255, 0.06), transparent 55%),
+      linear-gradient(180deg, var(--bg-1), var(--bg-0) 70%);
+    background-attachment: fixed;
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+    letter-spacing: 0.01em;
+  }
+
+  /* faint scanline / grid atmosphere over everything */
+  body::before {
+    content: "";
+    position: fixed;
+    inset: 0;
+    pointer-events: none;
+    z-index: 0;
+    background-image:
+      linear-gradient(rgba(255, 255, 255, 0.012) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(255, 255, 255, 0.012) 1px, transparent 1px);
+    background-size: 46px 46px;
+    mask-image: radial-gradient(ellipse 120% 90% at 50% 0%, #000 30%, transparent 92%);
+  }
+
+  .wrap {
+    position: relative;
+    z-index: 1;
+    max-width: 1240px;
+    margin: 0 auto;
+    padding: clamp(1.1rem, 0.6rem + 2vw, 2.4rem) clamp(0.9rem, 0.5rem + 2vw, 2rem) 3rem;
+  }
+
+  /* ============================ HEADER ============================ */
+  .masthead {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: flex-end;
+    justify-content: space-between;
+    gap: 1rem 1.5rem;
+    padding-bottom: 1.25rem;
+    border-bottom: 1px solid var(--hairline-soft);
+  }
+
+  .id-block { min-width: 0; }
+
+  .eyebrow {
+    display: flex;
+    align-items: center;
+    gap: 0.55rem;
+    font-family: var(--mono);
+    font-size: 0.72rem;
+    letter-spacing: 0.28em;
+    text-transform: uppercase;
+    color: var(--ink-dim);
+    margin: 0 0 0.5rem;
+  }
+  .eyebrow .node-dot {
+    width: 7px; height: 7px; border-radius: 50%;
+    background: var(--signal);
+    box-shadow: 0 0 0 0 var(--signal-glow);
+    animation: pulse 2.6s var(--ease) infinite;
+  }
+  @keyframes pulse {
+    0%   { box-shadow: 0 0 0 0 var(--signal-glow); }
+    70%  { box-shadow: 0 0 0 9px transparent; }
+    100% { box-shadow: 0 0 0 0 transparent; }
+  }
+
+  h1.hostname {
+    font-family: var(--mono);
+    font-weight: 600;
+    font-size: clamp(2.1rem, 1.2rem + 4vw, 3.5rem);
+    line-height: 0.98;
+    letter-spacing: -0.02em;
+    color: var(--ink-hi);
+    margin: 0;
+    text-shadow: 0 0 34px rgba(53, 224, 161, 0.14);
+  }
+  h1.hostname .caret {
+    color: var(--signal);
+    font-weight: 400;
+    animation: blink 1.3s steps(1) infinite;
+  }
+  @keyframes blink { 50% { opacity: 0.15; } }
+
+  .subline {
+    margin: 0.55rem 0 0;
+    font-size: 0.9rem;
+    color: var(--ink-dim);
+  }
+  .subline b { color: var(--ink); font-weight: 600; }
+
+  /* health pill + meta */
+  .status-col {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
+    gap: 0.6rem;
+    text-align: right;
+  }
+
+  .health-pill {
+    --c: var(--signal);
+    --g: var(--signal-glow);
+    display: inline-flex;
+    align-items: center;
+    gap: 0.6rem;
+    padding: 0.5rem 0.95rem 0.5rem 0.7rem;
+    border-radius: 999px;
+    font-family: var(--mono);
+    font-size: 0.82rem;
+    font-weight: 600;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--c);
+    background: color-mix(in oklab, var(--c) 12%, var(--surface));
+    border: 1px solid color-mix(in oklab, var(--c) 45%, transparent);
+    box-shadow: inset 0 0 18px color-mix(in oklab, var(--c) 14%, transparent),
+                0 0 22px var(--g);
+    transition: color var(--dur) var(--ease),
+                background var(--dur) var(--ease),
+                border-color var(--dur) var(--ease),
+                box-shadow var(--dur) var(--ease);
+  }
+  .health-pill .beacon {
+    width: 9px; height: 9px; border-radius: 50%;
+    background: var(--c);
+    box-shadow: 0 0 10px var(--c);
+    flex: none;
+  }
+  .health-pill[data-health="amber"] { --c: var(--amber); --g: var(--amber-glow); }
+  .health-pill[data-health="crit"]  { --c: var(--crit);  --g: var(--crit-glow); }
+  .health-pill[data-health="crit"] .beacon { animation: pulse 1s steps(2) infinite; }
+  .health-pill[data-health="down"]  { --c: var(--ink-faint); --g: transparent; }
+
+  .meta-line {
+    font-family: var(--mono);
+    font-size: 0.76rem;
+    color: var(--ink-dim);
+  }
+  .meta-line span { color: var(--ink); }
+  .ts-chip {
+    display: inline-flex; align-items: center; gap: 0.4rem;
+    color: var(--cyan);
+  }
+  .ts-chip::before {
+    content: ""; width: 6px; height: 6px; border-radius: 50%;
+    background: var(--cyan); box-shadow: 0 0 8px var(--cyan);
+  }
+  .ts-chip[data-down="1"] { color: var(--ink-faint); }
+  .ts-chip[data-down="1"]::before { background: var(--ink-faint); box-shadow: none; }
+
+  /* ======================= OFFLINE / STALE BANNER ======================= */
+  .banner {
+    display: none;
+    align-items: center;
+    gap: 0.85rem;
+    margin-top: var(--gap);
+    padding: 0.85rem 1.1rem;
+    border-radius: var(--radius-sm);
+    font-family: var(--mono);
+    font-size: 0.86rem;
+    letter-spacing: 0.06em;
+    color: var(--crit);
+    background: color-mix(in oklab, var(--crit) 12%, var(--surface));
+    border: 1px solid color-mix(in oklab, var(--crit) 40%, transparent);
+    box-shadow: inset 0 0 24px color-mix(in oklab, var(--crit) 10%, transparent);
+  }
+  .banner[data-show="1"] { display: flex; }
+  .banner[data-kind="stale"] {
+    color: var(--amber);
+    background: color-mix(in oklab, var(--amber) 12%, var(--surface));
+    border-color: color-mix(in oklab, var(--amber) 40%, transparent);
+  }
+  .banner .warn-ico {
+    flex: none; width: 22px; height: 22px;
+    display: grid; place-items: center;
+    border-radius: 5px;
+    background: currentColor;
+    color: var(--bg-0);
+    font-weight: 800;
+  }
+  .banner b { color: inherit; }
+  .banner .b-sub { color: var(--ink-dim); font-weight: 400; letter-spacing: 0.02em; }
+
+  /* ============================ ALERTS ============================ */
+  .alerts { margin-top: var(--gap); display: grid; gap: 0.55rem; }
+  .alert {
+    display: flex; align-items: center; gap: 0.7rem;
+    padding: 0.7rem 0.95rem;
+    border-radius: var(--radius-sm);
+    font-size: 0.86rem;
+    border: 1px solid var(--hairline);
+    background: var(--surface);
+    animation: slideIn var(--dur) var(--ease) both;
+  }
+  @keyframes slideIn {
+    from { opacity: 0; transform: translateY(-6px); }
+    to   { opacity: 1; transform: none; }
+  }
+  .alert .tag {
+    font-family: var(--mono); font-size: 0.68rem; font-weight: 700;
+    letter-spacing: 0.12em; text-transform: uppercase;
+    padding: 0.2rem 0.5rem; border-radius: 5px; flex: none;
+  }
+  .alert[data-level="warn"] { border-color: color-mix(in oklab, var(--amber) 42%, transparent); }
+  .alert[data-level="warn"] .tag { background: color-mix(in oklab, var(--amber) 20%, transparent); color: var(--amber); }
+  .alert[data-level="crit"] { border-color: color-mix(in oklab, var(--crit) 42%, transparent); }
+  .alert[data-level="crit"] .tag { background: color-mix(in oklab, var(--crit) 20%, transparent); color: var(--crit); }
+
+  /* ============================ GRID ============================ */
+  main { display: grid; gap: var(--gap); margin-top: var(--gap); }
+
+  .bento {
+    display: grid;
+    gap: var(--gap);
+    grid-template-columns: repeat(6, 1fr);
+  }
+
+  .card {
+    position: relative;
+    background:
+      linear-gradient(180deg, var(--surface-2), var(--surface));
+    border: 1px solid var(--hairline);
+    border-radius: var(--radius);
+    padding: 1.05rem 1.1rem 1.15rem;
+    overflow: hidden;
+    transition: border-color var(--dur) var(--ease), transform var(--dur) var(--ease);
+  }
+  .card::after {
+    /* top hairline sheen */
+    content: ""; position: absolute; inset: 0 0 auto 0; height: 1px;
+    background: linear-gradient(90deg, transparent, rgba(255,255,255,0.09), transparent);
+  }
+  .card:hover { border-color: color-mix(in oklab, var(--signal) 30%, var(--hairline)); }
+
+  .card-head {
+    display: flex; align-items: center; justify-content: space-between;
+    gap: 0.5rem; margin-bottom: 0.75rem;
+  }
+  .card-label {
+    font-family: var(--mono);
+    font-size: 0.7rem;
+    letter-spacing: 0.2em;
+    text-transform: uppercase;
+    color: var(--ink-dim);
+  }
+  .card-glyph {
+    font-family: var(--mono);
+    font-size: 0.66rem;
+    color: var(--ink-faint);
+    letter-spacing: 0.1em;
+  }
+
+  /* stat cards span 2 of 6 -> 3 per row on desktop */
+  .stat { grid-column: span 2; }
+
+  .stat-body { display: flex; align-items: center; gap: 0.9rem; }
+
+  .readout { min-width: 0; }
+  .readout .value {
+    font-family: var(--mono);
+    font-weight: 600;
+    font-size: clamp(1.7rem, 1.2rem + 1.4vw, 2.15rem);
+    line-height: 1;
+    color: var(--ink-hi);
+    letter-spacing: -0.01em;
+    font-variant-numeric: tabular-nums;
+    display: inline-flex; align-items: baseline; gap: 0.12em;
+  }
+  .readout .unit { font-size: 0.5em; color: var(--ink-dim); font-weight: 500; }
+  .readout .sub {
+    margin-top: 0.35rem;
+    font-family: var(--mono);
+    font-size: 0.74rem;
+    color: var(--ink-dim);
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* subtle pulse when a value changes */
+  .flash { animation: flash var(--dur) var(--ease); }
+  @keyframes flash {
+    0% { opacity: 0.4; transform: translateY(2px); }
+    100% { opacity: 1; transform: none; }
+  }
+
+  /* ---- gauge ring (SVG) ---- */
+  .ring { flex: none; display: block; }
+  .ring .track { stroke: var(--hairline); }
+  .ring .fill {
+    stroke: var(--signal);
+    stroke-linecap: round;
+    transition: stroke-dashoffset var(--dur) var(--ease), stroke var(--dur) var(--ease);
+    filter: drop-shadow(0 0 5px var(--signal-glow));
+  }
+  .ring[data-tone="amber"] .fill { stroke: var(--amber); filter: drop-shadow(0 0 5px var(--amber-glow)); }
+  .ring[data-tone="crit"]  .fill { stroke: var(--crit);  filter: drop-shadow(0 0 5px var(--crit-glow)); }
+  .ring[data-tone="cyan"]  .fill { stroke: var(--cyan);  filter: drop-shadow(0 0 5px rgba(79,200,255,.3)); }
+  .ring-label {
+    font-family: var(--mono);
+    font-size: 0.62rem;
+    fill: var(--ink-dim);
+    letter-spacing: 0.05em;
+  }
+
+  /* ---- linear meter (transform-based, compositor friendly) ---- */
+  .meter {
+    position: relative;
+    height: 8px;
+    border-radius: 999px;
+    background: var(--bg-1);
+    border: 1px solid var(--hairline-soft);
+    overflow: hidden;
+    margin-top: 0.7rem;
+  }
+  .meter > i {
+    position: absolute; inset: 0;
+    transform-origin: left center;
+    transform: scaleX(0);
+    background: linear-gradient(90deg, color-mix(in oklab, var(--signal) 60%, #000), var(--signal));
+    transition: transform var(--dur) var(--ease), background var(--dur) var(--ease);
+  }
+  .meter[data-tone="amber"] > i { background: linear-gradient(90deg, color-mix(in oklab, var(--amber) 55%, #000), var(--amber)); }
+  .meter[data-tone="crit"]  > i { background: linear-gradient(90deg, color-mix(in oklab, var(--crit) 55%, #000), var(--crit)); }
+  .meter[data-tone="cyan"]  > i { background: linear-gradient(90deg, color-mix(in oklab, var(--cyan) 55%, #000), var(--cyan)); }
+
+  /* ======================= GPU SPOTLIGHT ======================= */
+  .gpu { grid-column: span 4; }
+  .gpu-inner { display: grid; grid-template-columns: auto 1fr; gap: 1.3rem; align-items: center; }
+  .gpu-badge {
+    font-family: var(--mono);
+    font-size: 0.66rem; letter-spacing: 0.16em; text-transform: uppercase;
+    color: var(--signal);
+    padding: 0.2rem 0.5rem; border-radius: 5px;
+    border: 1px solid color-mix(in oklab, var(--signal) 40%, transparent);
+    background: color-mix(in oklab, var(--signal) 10%, transparent);
+  }
+  .gpu-name {
+    font-family: var(--mono); font-weight: 600;
+    font-size: clamp(1.1rem, 0.8rem + 1vw, 1.45rem);
+    color: var(--ink-hi); margin: 0.55rem 0 0.15rem;
+  }
+  .gpu-name small { color: var(--ink-dim); font-weight: 400; font-size: 0.62em; letter-spacing: 0.04em; }
+
+  .gpu-metrics {
+    display: grid; grid-template-columns: repeat(3, 1fr);
+    gap: 0.75rem; margin-top: 0.95rem;
+  }
+  .gpu-metric {
+    background: var(--bg-1);
+    border: 1px solid var(--hairline-soft);
+    border-radius: var(--radius-sm);
+    padding: 0.7rem 0.75rem;
+  }
+  .gpu-metric .k {
+    font-family: var(--mono); font-size: 0.62rem; letter-spacing: 0.14em;
+    text-transform: uppercase; color: var(--ink-faint);
+  }
+  .gpu-metric .v {
+    font-family: var(--mono); font-weight: 600; font-size: 1.15rem;
+    color: var(--ink-hi); margin-top: 0.3rem; font-variant-numeric: tabular-nums;
+  }
+  .gpu-metric .v small { font-size: 0.55em; color: var(--ink-dim); font-weight: 500; }
+  .gpu-metric[data-tone="amber"] .v { color: var(--amber); }
+  .gpu-metric[data-tone="crit"]  .v { color: var(--crit); }
+
+  .gpu-ring-wrap { display: grid; place-items: center; gap: 0.4rem; }
+  .gpu-ring-cap {
+    font-family: var(--mono); font-size: 0.64rem; letter-spacing: 0.16em;
+    text-transform: uppercase; color: var(--ink-dim);
+  }
+
+  /* ======================= QUEUE ======================= */
+  .queue { grid-column: span 2; }
+  .queue-grid { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 0.55rem; }
+  .q-cell {
+    text-align: center;
+    background: var(--bg-1);
+    border: 1px solid var(--hairline-soft);
+    border-radius: var(--radius-sm);
+    padding: 0.75rem 0.4rem;
+  }
+  .q-cell .qv {
+    font-family: var(--mono); font-weight: 700; font-size: 1.7rem;
+    color: var(--ink-hi); line-height: 1; font-variant-numeric: tabular-nums;
+  }
+  .q-cell .qk {
+    display: block; margin-top: 0.4rem;
+    font-family: var(--mono); font-size: 0.6rem; letter-spacing: 0.12em;
+    text-transform: uppercase; color: var(--ink-faint);
+  }
+  .q-cell[data-role="processing"][data-active="1"] .qv { color: var(--cyan); }
+  .q-cell[data-role="processing"][data-active="1"] { border-color: color-mix(in oklab, var(--cyan) 40%, transparent); }
+  .q-cell[data-role="pending"][data-active="1"] .qv { color: var(--amber); }
+  .q-cell[data-role="done"] .qv { color: var(--signal); }
+
+  /* ======================= SERVICES ======================= */
+  .services { grid-column: span 6; }
+  .svc-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 0.4rem;
+    grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); }
+  .svc {
+    display: flex; align-items: center; gap: 0.7rem;
+    padding: 0.7rem 0.85rem;
+    background: var(--bg-1);
+    border: 1px solid var(--hairline-soft);
+    border-radius: var(--radius-sm);
+  }
+  .svc .led {
+    flex: none; width: 9px; height: 9px; border-radius: 50%;
+    background: var(--ink-faint);
+  }
+  .svc[data-active="1"] .led { background: var(--signal); box-shadow: 0 0 9px var(--signal-glow); }
+  .svc[data-active="0"] .led { background: var(--crit); box-shadow: 0 0 9px var(--crit-glow); }
+  .svc .svc-name { font-family: var(--mono); font-size: 0.86rem; color: var(--ink); flex: 1; min-width: 0;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .svc .svc-state {
+    font-family: var(--mono); font-size: 0.66rem; letter-spacing: 0.12em;
+    text-transform: uppercase; color: var(--ink-dim);
+  }
+  .svc[data-active="1"] .svc-state { color: var(--signal); }
+  .svc[data-active="0"] .svc-state { color: var(--crit); }
+
+  /* ======================= ACTIVITY ======================= */
+  .activity { grid-column: span 6; }
+  .act-body { display: grid; gap: 0.7rem; }
+  .act-row { display: flex; flex-wrap: wrap; gap: 0.5rem; align-items: center; }
+  .act-row .k {
+    font-family: var(--mono); font-size: 0.64rem; letter-spacing: 0.14em;
+    text-transform: uppercase; color: var(--ink-faint);
+    min-width: 92px; flex: none;
+  }
+  .uchip {
+    display: inline-flex; align-items: center; gap: 0.45rem;
+    font-family: var(--mono); font-size: 0.8rem;
+    padding: 0.35rem 0.7rem; border-radius: 999px;
+    background: var(--bg-1); border: 1px solid var(--hairline-soft); color: var(--ink);
+  }
+  .uchip .led { flex: none; width: 8px; height: 8px; border-radius: 50%; background: var(--ink-faint); }
+  .uchip[data-on="1"] .led { background: var(--signal); box-shadow: 0 0 8px var(--signal-glow); }
+  .uchip b { color: var(--ink-hi); font-weight: 600; }
+  .uchip .muted { color: var(--ink-dim); }
+  .act-empty { font-family: var(--mono); font-size: 0.8rem; color: var(--ink-dim); }
+
+  /* power chip in masthead */
+  .meta-line.pw-chip[data-src="battery"] { color: var(--amber); }
+  .meta-line.pw-chip[data-src="battery"] span { color: var(--amber); }
+
+  /* shared read-only badge */
+  .ro-badge {
+    display: none;
+    font-family: var(--mono); font-size: 0.6rem; letter-spacing: 0.16em;
+    text-transform: uppercase; color: var(--cyan);
+    padding: 0.15rem 0.5rem; border-radius: 5px;
+    border: 1px solid color-mix(in oklab, var(--cyan) 35%, transparent);
+    background: color-mix(in oklab, var(--cyan) 8%, transparent);
+  }
+  body[data-shared="1"] .ro-badge { display: inline-block; }
+
+  /* dim the whole board when connection is lost */
+  main.is-down .card:not(.always-on) { opacity: 0.42; filter: saturate(0.5); }
+  main { transition: opacity var(--dur) var(--ease); }
+
+  /* ============================ FOOTER ============================ */
+  footer {
+    margin-top: calc(var(--gap) * 1.4);
+    padding-top: 1.1rem;
+    border-top: 1px solid var(--hairline-soft);
+    display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between;
+    gap: 0.8rem 1.5rem;
+    font-family: var(--mono); font-size: 0.76rem; color: var(--ink-dim);
+  }
+  footer .foot-meta { display: flex; flex-wrap: wrap; gap: 0.35rem 1.4rem; }
+  footer .foot-meta b { color: var(--ink); font-weight: 600; }
+  footer a.netdata {
+    display: inline-flex; align-items: center; gap: 0.45rem;
+    color: var(--cyan); text-decoration: none;
+    padding: 0.45rem 0.85rem; border-radius: 999px;
+    border: 1px solid color-mix(in oklab, var(--cyan) 35%, transparent);
+    background: color-mix(in oklab, var(--cyan) 8%, transparent);
+    transition: background var(--dur) var(--ease), border-color var(--dur) var(--ease);
+  }
+  footer a.netdata:hover { background: color-mix(in oklab, var(--cyan) 16%, transparent); }
+  footer a.netdata:focus-visible { outline: 2px solid var(--cyan); outline-offset: 2px; }
+  footer a.netdata::before { content: "▸"; }
+
+  /* ============================ RESPONSIVE ============================ */
+  @media (max-width: 900px) {
+    .stat { grid-column: span 3; }   /* 2 per row */
+    .gpu  { grid-column: span 6; }
+    .queue { grid-column: span 6; }
+    .gpu-inner { grid-template-columns: 1fr; }
+    .gpu-ring-wrap { order: -1; }
+  }
+  @media (max-width: 560px) {
+    .bento { grid-template-columns: repeat(2, 1fr); }
+    .stat { grid-column: span 1; }
+    .gpu, .queue, .services, .activity { grid-column: 1 / -1; }
+    .gpu-metrics { grid-template-columns: 1fr; }
+    .status-col { align-items: flex-start; text-align: left; }
+    .masthead { align-items: flex-start; }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after {
+      animation-duration: 0.001ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.001ms !important;
+    }
+  }
+
+  .sr-only {
+    position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+    overflow: hidden; clip: rect(0,0,0,0); white-space: nowrap; border: 0;
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <!-- =================== MASTHEAD =================== -->
+  <header class="masthead">
+    <div class="id-block">
+      <p class="eyebrow"><span class="node-dot" aria-hidden="true"></span>Compute Node · Telemetry <span class="ro-badge" id="ro-badge">Shared · Read-only</span></p>
+      <h1 class="hostname"><span id="hostname">leaddneung</span><span class="caret" aria-hidden="true">_</span></h1>
+      <p class="subline"><b id="gpu-sub">NVIDIA RTX 3070</b> · Ubuntu GPU worker · <span id="uptime-sub">—</span></p>
+    </div>
+
+    <div class="status-col">
+      <span class="health-pill" id="health-pill" data-health="down" role="status" aria-live="polite">
+        <span class="beacon" aria-hidden="true"></span>
+        <span id="health-text">CONNECTING</span>
+      </span>
+      <span class="meta-line" id="uptime-line">UPTIME <span>—</span></span>
+      <span class="meta-line ts-chip" id="tailscale-line" data-down="1">
+        <span id="tailscale-text">tailscale —</span>
+      </span>
+      <span class="meta-line pw-chip" id="power-line" data-src="ac">power —</span>
+    </div>
+  </header>
+
+  <!-- =================== OFFLINE / STALE BANNER =================== -->
+  <div class="banner" id="banner" data-show="0" role="alert" aria-live="assertive">
+    <span class="warn-ico" aria-hidden="true">!</span>
+    <span>
+      <b id="banner-title">SERVER OFFLINE</b>
+      <span class="b-sub" id="banner-sub"></span>
+    </span>
+  </div>
+
+  <!-- =================== ALERTS =================== -->
+  <section class="alerts" id="alerts" aria-label="Active alerts" hidden></section>
+
+  <!-- =================== MAIN GRID =================== -->
+  <main id="board" aria-label="Server telemetry">
+
+    <div class="bento">
+
+      <!-- CPU -->
+      <section class="card stat" aria-labelledby="l-cpu">
+        <div class="card-head">
+          <span class="card-label" id="l-cpu">CPU Load</span>
+          <span class="card-glyph">%</span>
+        </div>
+        <div class="stat-body">
+          <svg class="ring" id="ring-cpu" width="66" height="66" viewBox="0 0 66 66" role="meter"
+               aria-labelledby="l-cpu" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" aria-valuetext="unknown">
+            <circle class="track" cx="33" cy="33" r="27" fill="none" stroke-width="6"></circle>
+            <circle class="fill"  cx="33" cy="33" r="27" fill="none" stroke-width="6"
+                    transform="rotate(-90 33 33)" stroke-dasharray="169.6" stroke-dashoffset="169.6"></circle>
+          </svg>
+          <div class="readout">
+            <div class="value" id="v-cpu">—<span class="unit">%</span></div>
+            <div class="sub" id="s-cpu">load —</div>
+          </div>
+        </div>
+      </section>
+
+      <!-- RAM -->
+      <section class="card stat" aria-labelledby="l-ram">
+        <div class="card-head">
+          <span class="card-label" id="l-ram">Memory</span>
+          <span class="card-glyph">GiB</span>
+        </div>
+        <div class="stat-body">
+          <svg class="ring" id="ring-ram" width="66" height="66" viewBox="0 0 66 66" role="meter"
+               aria-labelledby="l-ram" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" aria-valuetext="unknown">
+            <circle class="track" cx="33" cy="33" r="27" fill="none" stroke-width="6"></circle>
+            <circle class="fill"  cx="33" cy="33" r="27" fill="none" stroke-width="6"
+                    transform="rotate(-90 33 33)" stroke-dasharray="169.6" stroke-dashoffset="169.6"></circle>
+          </svg>
+          <div class="readout">
+            <div class="value" id="v-ram">—<span class="unit">%</span></div>
+            <div class="sub" id="s-ram">— / — GiB</div>
+          </div>
+        </div>
+      </section>
+
+      <!-- DISK -->
+      <section class="card stat" aria-labelledby="l-disk">
+        <div class="card-head">
+          <span class="card-label" id="l-disk">Disk</span>
+          <span class="card-glyph">GiB</span>
+        </div>
+        <div class="stat-body">
+          <svg class="ring" id="ring-disk" width="66" height="66" viewBox="0 0 66 66" role="meter"
+               aria-labelledby="l-disk" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" aria-valuetext="unknown">
+            <circle class="track" cx="33" cy="33" r="27" fill="none" stroke-width="6"></circle>
+            <circle class="fill"  cx="33" cy="33" r="27" fill="none" stroke-width="6"
+                    transform="rotate(-90 33 33)" stroke-dasharray="169.6" stroke-dashoffset="169.6"></circle>
+          </svg>
+          <div class="readout">
+            <div class="value" id="v-disk">—<span class="unit">%</span></div>
+            <div class="sub" id="s-disk">— / — GiB</div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ============ GPU SPOTLIGHT ============ -->
+      <section class="card gpu" aria-labelledby="l-gpu">
+        <div class="card-head">
+          <span class="card-label" id="l-gpu">GPU · Spotlight</span>
+          <span class="gpu-badge">CUDA</span>
+        </div>
+        <div class="gpu-inner">
+          <div class="gpu-ring-wrap">
+            <svg class="ring" id="ring-gpu" width="132" height="132" viewBox="0 0 132 132" role="meter"
+                 aria-labelledby="l-gpu-util" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" aria-valuetext="unknown">
+              <circle class="track" cx="66" cy="66" r="54" fill="none" stroke-width="10"></circle>
+              <circle class="fill"  cx="66" cy="66" r="54" fill="none" stroke-width="10"
+                      transform="rotate(-90 66 66)" stroke-dasharray="339.3" stroke-dashoffset="339.3"></circle>
+              <text id="ring-gpu-val" class="ring-label" x="66" y="62" text-anchor="middle"
+                    style="font-size:1.5rem;fill:var(--ink-hi);font-weight:600" data-nofill="1">—</text>
+              <text class="ring-label" x="66" y="80" text-anchor="middle">UTILISATION</text>
+            </svg>
+            <span class="gpu-ring-cap" id="l-gpu-util">Core Utilisation</span>
+          </div>
+
+          <div>
+            <h2 class="gpu-name"><span id="gpu-name">RTX 3070</span> <small id="gpu-mem-line">— / — MiB VRAM</small></h2>
+            <div class="gpu-metrics">
+              <div class="gpu-metric" id="gm-temp">
+                <div class="k">Temp</div>
+                <div class="v" id="v-gpu-temp">—<small>°C</small></div>
+              </div>
+              <div class="gpu-metric" id="gm-power">
+                <div class="k">Power Draw</div>
+                <div class="v" id="v-gpu-power">—<small>W</small></div>
+              </div>
+              <div class="gpu-metric" id="gm-vram">
+                <div class="k">VRAM Used</div>
+                <div class="v" id="v-gpu-vram">—<small>%</small></div>
+              </div>
+            </div>
+            <div class="meter" id="meter-vram" data-tone="cyan" role="meter"
+                 aria-label="GPU memory used" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+              <i></i>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ============ QUEUE ============ -->
+      <section class="card queue" aria-labelledby="l-queue">
+        <div class="card-head">
+          <span class="card-label" id="l-queue">Transcription Queue</span>
+          <span class="card-glyph">jobs</span>
+        </div>
+        <div class="queue-grid">
+          <div class="q-cell" data-role="pending" data-active="0">
+            <span class="qv" id="q-pending">—</span><span class="qk">Pending</span>
+          </div>
+          <div class="q-cell" data-role="processing" data-active="0">
+            <span class="qv" id="q-processing">—</span><span class="qk">Active</span>
+          </div>
+          <div class="q-cell" data-role="done">
+            <span class="qv" id="q-done">—</span><span class="qk">Done</span>
+          </div>
+        </div>
+      </section>
+
+      <!-- ============ SERVICES ============ -->
+      <section class="card services" aria-labelledby="l-svc">
+        <div class="card-head">
+          <span class="card-label" id="l-svc">Systemd Services</span>
+          <span class="card-glyph" id="svc-count">—</span>
+        </div>
+        <ul class="svc-list" id="svc-list">
+          <li class="svc" data-active="0"><span class="led"></span><span class="svc-name">awaiting data…</span><span class="svc-state">—</span></li>
+        </ul>
+      </section>
+
+      <!-- ============ ACTIVITY ============ -->
+      <section class="card activity" aria-labelledby="l-act">
+        <div class="card-head">
+          <span class="card-label" id="l-act">Activity · Users &amp; Jobs</span>
+          <span class="card-glyph" id="act-glyph">—</span>
+        </div>
+        <div class="act-body" id="act-body">
+          <div class="act-row"><span class="k">Users</span><span class="act-empty">awaiting data…</span></div>
+        </div>
+      </section>
+
+    </div>
+  </main>
+
+  <!-- =================== FOOTER =================== -->
+  <footer>
+    <div class="foot-meta">
+      <span>Last update <b id="foot-updated">—</b></span>
+      <span>Poll <b>5s</b> · Stale &gt;<b>30s</b></span>
+      <span id="foot-host">node <b>leaddneung</b></span>
+    </div>
+    <a class="netdata" href="/console" rel="noopener" id="foot-console">Command Console</a>
+    <a class="netdata" href="/netdata" rel="noopener">Netdata</a>
+  </footer>
+
+</div>
+
+<script>
+(() => {
+  "use strict";
+
+  // -------------------- config --------------------
+  const POLL_MS    = 5000;
+  const STALE_SEC  = 30;
+
+  // shared read-only view (/monitor): hide the command-console affordance and
+  // pull the REDACTED feed (no transcript filenames). The console itself stays
+  // secret-gated server-side regardless; the redaction is enforced server-side.
+  const SHARED = location.pathname.replace(/\/+$/, "") === "/monitor";
+  const ENDPOINT = SHARED ? "/status.pub.json" : "/status.json";
+  if (SHARED) {
+    document.body.dataset.shared = "1";
+    const c = document.getElementById("foot-console");
+    if (c) c.remove();
+  }
+
+  // threshold table -> tone. [amberAt, critAt]
+  const T = {
+    cpu:  [75, 92],
+    ram:  [80, 92],
+    disk: [80, 92],
+    gpu:  [80, 96],   // GPU utilisation is not "bad", but high sustained -> amber
+    vram: [80, 95],
+    temp: [70, 90],   // per spec: green<70, amber<83, red>=83
+  };
+
+  const $ = (id) => document.getElementById(id);
+  const clamp = (n, lo, hi) => Math.max(lo, Math.min(hi, n));
+  const isNum = (n) => typeof n === "number" && isFinite(n);
+
+  // classify a value against a [amber, crit] threshold pair
+  function tone(val, pair) {
+    if (!isNum(val) || !pair) return "ok";
+    if (val >= pair[1]) return "crit";
+    if (val >= pair[0]) return "amber";
+    return "ok";
+  }
+  const toneAttr = (t) => (t === "ok" ? "" : t); // ring/meter expect "" for green
+
+  // ring geometry cache (circumference by radius)
+  function setRing(svgId, pct, t) {
+    const svg = $(svgId);
+    if (!svg) return;
+    const fill = svg.querySelector(".fill");
+    const r = parseFloat(fill.getAttribute("r"));
+    const c = 2 * Math.PI * r;
+    const p = clamp(isNum(pct) ? pct : 0, 0, 100);
+    fill.setAttribute("stroke-dasharray", c.toFixed(1));
+    fill.style.strokeDashoffset = (c * (1 - p / 100)).toFixed(2);
+    svg.dataset.tone = t === "cyan" ? "cyan" : toneAttr(t);
+    svg.setAttribute("aria-valuenow", Math.round(p));
+    svg.setAttribute("aria-valuetext", Math.round(p) + " percent");
+  }
+
+  function setMeter(id, pct, t) {
+    const m = $(id);
+    if (!m) return;
+    const p = clamp(isNum(pct) ? pct : 0, 0, 100);
+    m.querySelector("i").style.transform = "scaleX(" + (p / 100).toFixed(4) + ")";
+    if (t) m.dataset.tone = t === "cyan" ? "cyan" : toneAttr(t) || "cyan";
+    m.setAttribute("aria-valuenow", Math.round(p));
+  }
+
+  // update text only if changed; pulse on change
+  function setText(id, txt) {
+    const el = $(id);
+    if (!el) return;
+    if (el.dataset.prev === String(txt)) return;
+    el.dataset.prev = String(txt);
+    el.textContent = txt;
+    el.classList.remove("flash");
+    void el.offsetWidth;      // reflow to restart animation
+    el.classList.add("flash");
+  }
+  // set a value node that carries a <small>/<span> unit suffix
+  function setValue(id, num, unitHTML) {
+    const el = $(id);
+    if (!el) return;
+    const shown = isNum(num) ? (Number.isInteger(num) ? num : num.toFixed(1)) : "—";
+    const html = shown + (unitHTML || "");
+    if (el.dataset.prev === html) return;
+    el.dataset.prev = html;
+    el.innerHTML = html;
+    el.classList.remove("flash"); void el.offsetWidth; el.classList.add("flash");
+  }
+
+  const fmtInt = (n) => (isNum(n) ? Math.round(n).toLocaleString() : "—");
+  const fmt1   = (n) => (isNum(n) ? (Math.round(n * 10) / 10).toString() : "—");
+
+  function relTime(sec) {
+    if (!isNum(sec)) return "—";
+    const d = Math.max(0, Math.floor(Date.now() / 1000 - sec));
+    if (d < 2) return "just now";
+    if (d < 60) return d + "s ago";
+    if (d < 3600) return Math.floor(d / 60) + "m ago";
+    return Math.floor(d / 3600) + "h ago";
+  }
+
+  // -------------------- health pill logic --------------------
+  // Priority: connection down > critical alert > threshold crit >
+  //           warn alert > threshold amber > nominal.
+  function computeHealth(d) {
+    const alerts = Array.isArray(d.alerts) ? d.alerts : [];
+    if (alerts.some((a) => a && a.level === "crit")) return "crit";
+
+    const g = d.gpu || {};
+    const vramPct = isNum(g.mem_used_mb) && isNum(g.mem_total_mb) && g.mem_total_mb > 0
+      ? (g.mem_used_mb / g.mem_total_mb) * 100 : NaN;
+
+    const critHit =
+      tone(d.cpu_pct, T.cpu) === "crit" ||
+      tone(d.ram && d.ram.pct, T.ram) === "crit" ||
+      tone(d.disk && d.disk.pct, T.disk) === "crit" ||
+      tone(g.temp_c, T.temp) === "crit" ||
+      tone(vramPct, T.vram) === "crit";
+    if (critHit) return "crit";
+
+    if (alerts.some((a) => a && a.level === "warn")) return "amber";
+
+    const amberHit =
+      tone(d.cpu_pct, T.cpu) === "amber" ||
+      tone(d.ram && d.ram.pct, T.ram) === "amber" ||
+      tone(d.disk && d.disk.pct, T.disk) === "amber" ||
+      tone(g.temp_c, T.temp) === "amber" ||
+      tone(vramPct, T.vram) === "amber";
+    if (amberHit) return "amber";
+
+    return "ok";
+  }
+
+  const HEALTH_TEXT = { ok: "ALL NOMINAL", amber: "ELEVATED", crit: "CRITICAL", down: "OFFLINE" };
+
+  function setHealth(state) {
+    const pill = $("health-pill");
+    // default (no attribute) styles green; amber/crit/down have overrides
+    if (state === "ok") pill.removeAttribute("data-health");
+    else pill.dataset.health = state;
+    setText("health-text", HEALTH_TEXT[state] || "UNKNOWN");
+  }
+
+  // -------------------- render --------------------
+  function render(d) {
+    document.title = (d.hostname || "node") + " · GPU telemetry";
+    setText("hostname", d.hostname || "unknown-node");
+    $("foot-host").innerHTML = "node <b>" + escapeHtml(d.hostname || "—") + "</b>";
+
+    // uptime
+    setText("uptime-sub", d.uptime ? "up " + d.uptime : "uptime —");
+    $("uptime-line").innerHTML = "UPTIME <span>" + escapeHtml(d.uptime || "—") + "</span>";
+
+    // ---- CPU ----
+    const cpuT = tone(d.cpu_pct, T.cpu);
+    setValue("v-cpu", d.cpu_pct, '<span class="unit">%</span>');
+    setRing("ring-cpu", d.cpu_pct, cpuT);
+    const load = Array.isArray(d.load) ? d.load : [];
+    const loadTxt = "load " + (load.length ? load.map(fmt1).join(" · ") : "—");
+    setText("s-cpu", loadTxt + (isNum(d.cpu_temp) ? " · " + d.cpu_temp + "°C" : ""));
+
+    // ---- RAM ----
+    const ram = d.ram || {};
+    const ramT = tone(ram.pct, T.ram);
+    setValue("v-ram", ram.pct, '<span class="unit">%</span>');
+    setRing("ring-ram", ram.pct, ramT);
+    setText("s-ram", fmt1(ram.used_gb) + " / " + fmt1(ram.total_gb) + " GiB");
+
+    // ---- DISK ----
+    const disk = d.disk || {};
+    const diskT = tone(disk.pct, T.disk);
+    setValue("v-disk", disk.pct, '<span class="unit">%</span>');
+    setRing("ring-disk", disk.pct, diskT);
+    setText("s-disk", fmtInt(disk.used_gb) + " / " + fmtInt(disk.total_gb) + " GiB");
+
+    // ---- GPU ----
+    const g = d.gpu || {};
+    setText("gpu-name", g.name || "GPU");
+    setText("gpu-sub", "NVIDIA " + (g.name || "GPU"));
+    const utilT = tone(g.util_pct, T.gpu);
+    setRing("ring-gpu", g.util_pct, utilT);
+    const utilNode = $("ring-gpu-val");
+    if (utilNode) utilNode.textContent = isNum(g.util_pct) ? g.util_pct + "%" : "—";
+
+    const tempT = tone(g.temp_c, T.temp);
+    setValue("v-gpu-temp", g.temp_c, "<small>°C</small>");
+    $("gm-temp").dataset.tone = toneAttr(tempT);
+
+    setValue("v-gpu-power", g.power_w, "<small>W</small>");
+
+    const vramPct = isNum(g.mem_used_mb) && isNum(g.mem_total_mb) && g.mem_total_mb > 0
+      ? (g.mem_used_mb / g.mem_total_mb) * 100 : NaN;
+    const vramT = tone(vramPct, T.vram);
+    setValue("v-gpu-vram", isNum(vramPct) ? Math.round(vramPct) : NaN, "<small>%</small>");
+    $("gm-vram").dataset.tone = toneAttr(vramT);
+    setText("gpu-mem-line", fmtInt(g.mem_used_mb) + " / " + fmtInt(g.mem_total_mb) + " MiB VRAM");
+    setMeter("meter-vram", vramPct, vramT === "ok" ? "cyan" : vramT);
+
+    // ---- Tailscale ----
+    const ts = d.tailscale || {};
+    const tsOk = ts.status === "connected";
+    const tsChip = $("tailscale-line");
+    tsChip.dataset.down = tsOk ? "0" : "1";
+    setText("tailscale-text", "tailscale " + (ts.status || "unknown") +
+      (ts.ip ? " · " + ts.ip : ""));
+
+    // ---- Power (AC / battery) ----
+    const pw = d.power || {};
+    const pwChip = $("power-line");
+    if (pw.ac === false) {
+      pwChip.dataset.src = "battery";
+      setText("power-line", "⚠ ON BATTERY" + (isNum(pw.battery_pct) ? " " + pw.battery_pct + "%" : ""));
+    } else if (pw.ac === true) {
+      pwChip.dataset.src = "ac";
+      setText("power-line", "AC" + (isNum(pw.battery_pct) ? " · bat " + pw.battery_pct + "%" : ""));
+    } else {
+      pwChip.dataset.src = "ac";
+      setText("power-line", "power —");
+    }
+
+    // ---- Activity ----
+    renderActivity(d.activity, d.queue);
+
+    // ---- Queue ----
+    const q = d.queue || {};
+    setText("q-pending", fmtInt(q.pending));
+    setText("q-processing", fmtInt(q.processing));
+    setText("q-done", fmtInt(q.done));
+    $("q-pending").closest(".q-cell").dataset.active = isNum(q.pending) && q.pending > 0 ? "1" : "0";
+    $("q-processing").closest(".q-cell").dataset.active = isNum(q.processing) && q.processing > 0 ? "1" : "0";
+
+    // ---- Services ----
+    renderServices(Array.isArray(d.services) ? d.services : []);
+
+    // ---- Alerts ----
+    renderAlerts(Array.isArray(d.alerts) ? d.alerts : []);
+
+    // ---- Footer ----
+    setText("foot-updated", relTime(d.updated_at));
+  }
+
+  function renderServices(list) {
+    const ul = $("svc-list");
+    $("svc-count").textContent = list.length ? list.length + " units" : "—";
+    if (!list.length) {
+      ul.innerHTML = '<li class="svc" data-active="0"><span class="led"></span>' +
+        '<span class="svc-name">no services reported</span><span class="svc-state">—</span></li>';
+      return;
+    }
+    // signature to avoid needless DOM churn
+    const sig = list.map((s) => (s.name || "?") + ":" + (s.active ? 1 : 0)).join("|");
+    if (ul.dataset.sig === sig) return;
+    ul.dataset.sig = sig;
+    ul.innerHTML = list.map((s) => {
+      const on = s.active ? "1" : "0";
+      return '<li class="svc" data-active="' + on + '">' +
+        '<span class="led" aria-hidden="true"></span>' +
+        '<span class="svc-name">' + escapeHtml(s.name || "unknown") + '</span>' +
+        '<span class="svc-state">' + (s.active ? "active" : "down") + '</span></li>';
+    }).join("");
+  }
+
+  function renderAlerts(list) {
+    const wrap = $("alerts");
+    const clean = list.filter((a) => a && a.msg);
+    if (!clean.length) { wrap.hidden = true; wrap.innerHTML = ""; wrap.dataset.sig = ""; return; }
+    const sig = clean.map((a) => (a.level || "warn") + ":" + a.msg).join("|");
+    if (wrap.dataset.sig === sig) { wrap.hidden = false; return; }
+    wrap.dataset.sig = sig;
+    wrap.hidden = false;
+    wrap.innerHTML = clean.map((a) => {
+      const lvl = a.level === "crit" ? "crit" : "warn";
+      return '<div class="alert" data-level="' + lvl + '" role="' + (lvl === "crit" ? "alert" : "status") + '">' +
+        '<span class="tag">' + (lvl === "crit" ? "CRIT" : "WARN") + '</span>' +
+        '<span>' + escapeHtml(a.msg) + '</span></div>';
+    }).join("");
+  }
+
+  function renderActivity(a, q) {
+    a = a || {}; q = q || {};
+    const users = Array.isArray(a.users) ? a.users : [];
+    const gproc = Array.isArray(a.gpu_procs) ? a.gpu_procs : [];
+    $("act-glyph").textContent = users.length
+      ? users.length + (users.length === 1 ? " user" : " users") : "idle";
+
+    const chip = (on, name, muted) =>
+      '<span class="uchip" data-on="' + (on ? "1" : "0") + '">' +
+      '<span class="led" aria-hidden="true"></span><b>' + escapeHtml(name) + '</b>' +
+      (muted ? '<span class="muted">' + escapeHtml(muted) + '</span>' : '') + '</span>';
+
+    let html = '<div class="act-row"><span class="k">Users</span>';
+    html += users.length
+      ? users.map((u) => chip(u.sessions > 0, u.user,
+          (u.sessions > 0 ? u.sessions + " sess" : "bg") + " · " + fmt1(u.cpu) + "% · " + u.procs + "p")).join("")
+      : '<span class="act-empty">no interactive users</span>';
+    html += '</div>';
+
+    html += '<div class="act-row"><span class="k">GPU jobs</span>';
+    html += gproc.length
+      ? gproc.map((p) => chip(true, p.user || "?", "pid " + p.pid + " · " + fmtInt(p.vram_mb) + " MiB")).join("")
+      : '<span class="act-empty">GPU idle — no compute jobs</span>';
+    html += '</div>';
+
+    html += '<div class="act-row"><span class="k">Transcribe</span>';
+    html += a.current_job
+      ? chip(true, "processing", a.current_job)
+      : a.job_running
+        ? chip(true, "processing", "running")
+        : '<span class="act-empty">idle' + (isNum(q.done) ? " · " + q.done + " done" : "") + '</span>';
+    html += '</div>';
+
+    const body = $("act-body");
+    if (body.dataset.sig === html) return;
+    body.dataset.sig = html;
+    body.innerHTML = html;
+  }
+
+  function escapeHtml(s) {
+    return String(s).replace(/[&<>"']/g, (c) =>
+      ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+  }
+
+  // -------------------- connection state --------------------
+  function showBanner(kind, sub) {
+    const b = $("banner");
+    b.dataset.show = "1";
+    b.dataset.kind = kind;               // "offline" | "stale"
+    $("banner-title").textContent = kind === "stale" ? "DATA STALE" : "SERVER OFFLINE";
+    $("banner-sub").textContent = sub || "";
+  }
+  function hideBanner() { $("banner").dataset.show = "0"; }
+
+  function goDown(kind, sub, keepData) {
+    $("board").classList.add("is-down");
+    setHealth("down");
+    showBanner(kind, sub);
+    const chip = $("tailscale-line");
+    if (!keepData) chip.dataset.down = "1";
+  }
+  function goUp() {
+    $("board").classList.remove("is-down");
+    hideBanner();
+  }
+
+  // -------------------- poll loop --------------------
+  let lastGood = 0;
+
+  async function tick() {
+    try {
+      const res = await fetch(ENDPOINT, { cache: "no-store" });
+      if (!res.ok) throw new Error("HTTP " + res.status);
+      const data = await res.json();
+
+      const now = Date.now() / 1000;
+      const age = isNum(data.updated_at) ? now - data.updated_at : Infinity;
+
+      render(data);
+
+      if (age > STALE_SEC) {
+        // we have data, but it's old -> stale overlay (keep last values visible-dimmed)
+        goDown("stale", "Snapshot is " + Math.round(age) + "s old (limit " + STALE_SEC + "s).", true);
+      } else {
+        goUp();
+        setHealth(computeHealth(data));
+        lastGood = now;
+      }
+    } catch (err) {
+      const since = lastGood ? " Last contact " + relTime(lastGood) + "." : "";
+      goDown("offline", "Cannot reach " + ENDPOINT + "." + since, false);
+    }
+  }
+
+  // refresh relative "last update" label smoothly between polls
+  function tickClock() {
+    const el = $("foot-updated");
+    if (el && el.dataset.prev && lastGood) el.textContent = relTime(lastGood);
+  }
+
+  tick();
+  setInterval(tick, POLL_MS);
+  setInterval(tickClock, 1000);
+})();
+</script>
+</body>
+</html>

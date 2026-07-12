@@ -1,0 +1,7 @@
+[Unit]
+Description=Run health watchdog every 3 min
+[Timer]
+OnBootSec=120
+OnUnitActiveSec=180
+[Install]
+WantedBy=timers.target
