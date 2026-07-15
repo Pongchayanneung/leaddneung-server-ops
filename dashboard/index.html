@@ -710,6 +710,10 @@
                 <div class="k">Power Draw</div>
                 <div class="v" id="v-gpu-power">—<small>W</small></div>
               </div>
+              <div class="gpu-metric" id="gm-fan">
+                <div class="k">Fan</div>
+                <div class="v" id="v-gpu-fan">—<small>RPM</small></div>
+              </div>
               <div class="gpu-metric" id="gm-vram">
                 <div class="k">VRAM Used</div>
                 <div class="v" id="v-gpu-vram">—<small>%</small></div>
@@ -939,7 +943,8 @@
     setRing("ring-cpu", d.cpu_pct, cpuT);
     const load = Array.isArray(d.load) ? d.load : [];
     const loadTxt = "load " + (load.length ? load.map(fmt1).join(" · ") : "—");
-    setText("s-cpu", loadTxt + (isNum(d.cpu_temp) ? " · " + d.cpu_temp + "°C" : ""));
+    const cpuFanTxt = d.fans && isNum(d.fans.cpu) ? " · " + fmtInt(d.fans.cpu) + " rpm" : "";
+    setText("s-cpu", loadTxt + (isNum(d.cpu_temp) ? " · " + d.cpu_temp + "°C" : "") + cpuFanTxt);
 
     // ---- RAM ----
     const ram = d.ram || {};
@@ -969,6 +974,7 @@
     $("gm-temp").dataset.tone = toneAttr(tempT);
 
     setValue("v-gpu-power", g.power_w, "<small>W</small>");
+    setValue("v-gpu-fan", d.fans ? d.fans.gpu : null, "<small>RPM</small>");
 
     const vramPct = isNum(g.mem_used_mb) && isNum(g.mem_total_mb) && g.mem_total_mb > 0
       ? (g.mem_used_mb / g.mem_total_mb) * 100 : NaN;

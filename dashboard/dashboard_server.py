@@ -123,6 +123,30 @@ def cpu_temp():
     return None
 
 
+def fans():
+    """Fan RPMs from the ASUS EC (fan1=CPU, fan2=GPU), e.g. {"cpu": 3100, "gpu": 0}."""
+    base = "/sys/class/hwmon"
+    out = {}
+    try:
+        for h in os.listdir(base):
+            try:
+                name = open(os.path.join(base, h, "name")).read().strip()
+            except OSError:
+                continue
+            if name == "asus":
+                for f in sorted(os.listdir(os.path.join(base, h))):
+                    if f.startswith("fan") and f.endswith("_input"):
+                        try:
+                            rpm = int(open(os.path.join(base, h, f)).read().strip())
+                        except (OSError, ValueError):
+                            continue
+                        idx = f[3:f.index("_")]
+                        out[{"1": "cpu", "2": "gpu"}.get(idx, idx)] = rpm
+    except Exception:
+        pass
+    return out
+
+
 def power():
     """Wall power + battery. For a laptop-as-server, 'ac False' = imminent death."""
     ps = "/sys/class/power_supply"
@@ -282,7 +306,7 @@ def build_status():
     if not ts_ok:
         alerts.append({"level": "crit", "msg": "Tailscale down"})
     return {"hostname": socket.gethostname(), "updated_at": int(time.time()), "uptime": uptime,
-            "cpu_pct": cpu_pct(), "cpu_temp": cpu_temp(),
+            "cpu_pct": cpu_pct(), "cpu_temp": cpu_temp(), "fans": fans(),
             "load": [float(x) for x in open("/proc/loadavg").read().split()[:3]],
             "ram": r, "disk": disk, "gpu": g, "power": pw, "activity": act,
             "tailscale": {"status": "connected" if ts_ok else "down", "ip": ts_ip},
