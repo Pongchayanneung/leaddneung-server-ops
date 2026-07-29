@@ -75,6 +75,7 @@
 <h2>③ What the alerts mean</h2>
 <div class="card">
   <p><span class="dot g"></span><strong>"leaddneung alive"</strong> at <span class="mono">08:00</span> &amp; <span class="mono">20:00</span> — healthy heartbeat. Normal.</p>
+  <p><span class="dot r"></span><strong>"leaddneung-backup.service failed"</strong> — External USB drive (Elements) unattached. Plug in drive, then run: <span class="mono">sudo systemctl reset-failed leaddneung-backup.service && sudo systemctl start leaddneung-backup.service</span></p>
   <p><span class="dot a"></span><strong>"X auto-recovered"</strong> — a service crashed and the watchdog restarted it. No action needed; just FYI.</p>
   <p><span class="dot r"></span><strong>"X DOWN — restart FAILED"</strong> / <strong>disk / RAM / GPU temp</strong> — needs you. See §④.</p>
   <p><span class="dot r"></span><strong>No heartbeat at 08:00 or 20:00</strong> = the server or your home network is dead (likely power/internet outage at home). Nothing you can do remotely; check when back or ask someone home to power-cycle.</p>
