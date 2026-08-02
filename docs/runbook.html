@@ -46,6 +46,42 @@
   ul{margin:.4rem 0;padding-left:1.1rem} li{margin:.25rem 0}
   footer{color:var(--dim);font-size:.75rem;font-family:var(--mono);margin-top:2rem;
          border-top:1px solid var(--line);padding-top:.9rem}
+
+
+
+/* ==== pagenav (injected) ==== */
+  .pagenav {
+    display: flex; flex-wrap: wrap; gap: 0.45rem;
+    margin: 0 0 0.35rem;
+  }
+  .pagenav a {
+    font-family: var(--mono, ui-monospace, monospace);
+    font-size: 0.73rem; letter-spacing: 0.07em; text-transform: uppercase;
+    text-decoration: none; white-space: nowrap;
+    color: var(--ink-dim, #8592a3);
+    padding: 0.42rem 0.85rem;
+    background: var(--surface, #121721);
+    border: 1px solid var(--hairline, #26303f);
+    border-radius: 100px;
+    transition: color 160ms ease, border-color 160ms ease, background 160ms ease;
+  }
+  .pagenav a:hover {
+    color: var(--ink-hi, #eef4fb);
+    border-color: var(--cyan, #4fc8ff);
+    background: var(--surface-2, #171d29);
+  }
+  .pagenav a:focus-visible {
+    outline: 2px solid var(--cyan, #4fc8ff); outline-offset: 2px;
+  }
+  .pagenav a[aria-current="page"] {
+    color: #08131a; font-weight: 600;
+    background: var(--cyan, #4fc8ff);
+    border-color: var(--cyan, #4fc8ff);
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .pagenav a { transition: none; }
+  }
+/* ==== /pagenav ==== */
 </style>
 </head>
 <body>
@@ -54,6 +90,24 @@
   <p class="lead">Everything you need to watch the GPU server from your phone while you're away.</p>
   <span class="tag">generated 2026-07-11 · valid until config changes</span>
 </header>
+
+  <!-- ==== pagenav (injected) ==== -->
+  <nav class="pagenav" aria-label="Dashboard sections">
+    <a href="/">Telemetry</a>
+    <a href="/now">Now running</a>
+    <a href="/asr">ASR report</a>
+    <a href="/asr-live">A/B monitor</a>
+    <a href="/console">Console</a>
+    <a href="/runbook" aria-current="page">Runbook</a>
+    <a href="/netdata">Netdata</a>
+  </nav>
+  <!-- ==== /pagenav ==== -->
+
+  
+
+  
+
+  
 
 <h2>① The one link — live status</h2>
 <a class="big-link" href="http://leaddneung:8080">http://leaddneung:8080<span class="s">GPU · CPU · RAM · disk · services · queue · auto-refreshes</span></a>

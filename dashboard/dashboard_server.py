@@ -431,6 +431,42 @@ class Handler(BaseHTTPRequestHandler):
             return self._file("index.html", "text/html; charset=utf-8")
         if path == "/console":
             return self._file("console.html", "text/html; charset=utf-8")
+        if path == "/asr":
+            # Thai ASR model evaluation report (static)
+            return self._file("asr.html", "text/html; charset=utf-8")
+        if path == "/asr-live":
+            return self._file("asr_live.html", "text/html; charset=utf-8")
+        if path == "/now":
+            return self._file("now.html", "text/html; charset=utf-8")
+        if path == "/now.json":
+            try:
+                import now_running
+                return self._send(200, "application/json",
+                                  json.dumps(now_running.status()))
+            except Exception as err:  # noqa: BLE001 - never 500 the dashboard
+                return self._send(200, "application/json",
+                                  json.dumps({"hostname": "leaddneung",
+                                              "jobs": [], "queue": {},
+                                              "vitals": {},
+                                              "alerts": [{"level": "crit",
+                                                          "text": str(err)[:80]}]}))
+        if path == "/asr-job.json":
+            try:
+                import asr_job
+                return self._send(200, "application/json",
+                                  json.dumps(asr_job.status()))
+            except Exception as err:  # noqa: BLE001 - never 500 the dashboard
+                return self._send(200, "application/json",
+                                  json.dumps({"state": "stopped", "pid": None,
+                                              "phase": "error", "phase_index": 0,
+                                              "phases": [], "elapsed_secs": None,
+                                              "total_eta_secs": 0,
+                                              "remaining_secs": None,
+                                              "progress_pct": 0, "results": [],
+                                              "log_tail": [str(err)], "gpu": None}))
+        if path == "/runbook":
+            # runbook.html shipped without a route; wire it up
+            return self._file("runbook.html", "text/html; charset=utf-8")
         if path == "/netdata":
             host = self.headers.get("Host", "leaddneung:8080").split(":")[0]
             self.send_response(302)

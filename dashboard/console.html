@@ -28,9 +28,59 @@
   pre{background:#05080b;border:1px solid var(--line);border-radius:8px;padding:1rem;white-space:pre-wrap;word-break:break-word;
        min-height:120px;margin-top:1rem;overflow-x:auto;max-height:55vh;overflow-y:auto}
   .foot{color:var(--dim);font-size:.78rem;margin-top:1.4rem;border-top:1px solid var(--line);padding-top:.8rem}
+
+
+
+/* ==== pagenav (injected) ==== */
+  .pagenav {
+    display: flex; flex-wrap: wrap; gap: 0.45rem;
+    margin: 0 0 0.35rem;
+  }
+  .pagenav a {
+    font-family: var(--mono, ui-monospace, monospace);
+    font-size: 0.73rem; letter-spacing: 0.07em; text-transform: uppercase;
+    text-decoration: none; white-space: nowrap;
+    color: var(--ink-dim, #8592a3);
+    padding: 0.42rem 0.85rem;
+    background: var(--surface, #121721);
+    border: 1px solid var(--hairline, #26303f);
+    border-radius: 100px;
+    transition: color 160ms ease, border-color 160ms ease, background 160ms ease;
+  }
+  .pagenav a:hover {
+    color: var(--ink-hi, #eef4fb);
+    border-color: var(--cyan, #4fc8ff);
+    background: var(--surface-2, #171d29);
+  }
+  .pagenav a:focus-visible {
+    outline: 2px solid var(--cyan, #4fc8ff); outline-offset: 2px;
+  }
+  .pagenav a[aria-current="page"] {
+    color: #08131a; font-weight: 600;
+    background: var(--cyan, #4fc8ff);
+    border-color: var(--cyan, #4fc8ff);
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .pagenav a { transition: none; }
+  }
+/* ==== /pagenav ==== */
 </style>
 </head>
 <body>
+  <!-- ==== pagenav (injected) ==== -->
+  <nav class="pagenav" aria-label="Dashboard sections">
+    <a href="/">Telemetry</a>
+    <a href="/now">Now running</a>
+    <a href="/asr">ASR report</a>
+    <a href="/asr-live">A/B monitor</a>
+    <a href="/console" aria-current="page">Console</a>
+    <a href="/runbook">Runbook</a>
+    <a href="/netdata">Netdata</a>
+  </nav>
+  <!-- ==== /pagenav ==== -->
+  
+  
+  
   <h1>leaddneung<span class="caret">_</span> · command console</h1>
   <p class="sub">Type an instruction; it runs <code>claude -p</code> on the server and returns the result.</p>
   <div class="warn">⚠ FULL AUTONOMY — commands execute immediately with no confirmation. Bounded to what user <b>neung</b> can do without a sudo password. Kill switch: <code>rm ~/dashboard/COMMAND_ENABLED</code> on the server.</div>
