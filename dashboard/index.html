@@ -485,6 +485,26 @@
   .svc[data-active="0"] .svc-state { color: var(--crit); }
 
   /* ======================= ACTIVITY ======================= */
+  /* ---- history: the one thing lost when netdata was removed ---- */
+  .history { grid-column: span 6; }
+  .hist-head { display: flex; flex-wrap: wrap; gap: 0.5rem 0.9rem;
+               align-items: center; justify-content: space-between; margin-bottom: 0.85rem; }
+  .hist-group { display: flex; flex-wrap: wrap; gap: 0.3rem; }
+  .hist-btn {
+    font: inherit; font-family: var(--mono); font-size: 0.7rem;
+    letter-spacing: 0.07em; text-transform: uppercase;
+    color: var(--ink-dim); background: var(--surface-2);
+    border: 1px solid var(--hairline); border-radius: 999px;
+    padding: 0.22rem 0.7rem; cursor: pointer;
+    transition: color 140ms ease, border-color 140ms ease, background 140ms ease;
+  }
+  .hist-btn:hover { color: var(--ink-hi); border-color: var(--ink-faint); }
+  .hist-btn[aria-pressed="true"] {
+    color: var(--bg-0); background: var(--cyan); border-color: var(--cyan); }
+  .hist-btn:focus-visible { outline: 2px solid var(--cyan); outline-offset: 2px; }
+  .hist-chart { display: block; width: 100%; height: clamp(150px, 20vw, 230px); }
+  .hist-meta { font-size: 0.72rem; color: var(--ink-faint); margin: 0.55rem 0 0; }
+
   .activity { grid-column: span 6; }
   .act-body { display: grid; gap: 0.7rem; }
   .act-row { display: flex; flex-wrap: wrap; gap: 0.5rem; align-items: center; }
@@ -646,7 +666,6 @@
     <a href="/asr-live">A/B monitor</a>
     <a href="/console">Console</a>
     <a href="/runbook">Runbook</a>
-    <a href="/netdata">Netdata</a>
   </nav>
   <!-- ==== /pagenav ==== -->
 
@@ -731,6 +750,49 @@
             <div class="sub" id="s-disk">— / — GiB</div>
           </div>
         </div>
+      </section>
+
+      <!-- POWER — wall draw + electricity cost (power-meter.service) -->
+      <section class="card stat" aria-labelledby="l-power">
+        <div class="card-head">
+          <span class="card-label" id="l-power">Power</span>
+          <span class="card-glyph">W</span>
+        </div>
+        <div class="stat-body">
+          <div class="readout">
+            <div class="value" id="v-power">—<span class="unit">W</span></div>
+            <div class="sub" id="s-power">—</div>
+          </div>
+        </div>
+      </section>
+
+      <!-- TRANSCRIPTION COST — electricity per hour of audio -->
+      <section class="card stat" aria-labelledby="l-tcost">
+        <div class="card-head">
+          <span class="card-label" id="l-tcost">Transcription cost</span>
+          <span class="card-glyph">THB</span>
+        </div>
+        <div class="stat-body">
+          <div class="readout">
+            <div class="value" id="v-tcost">—<span class="unit">/audio-hr</span></div>
+            <div class="sub" id="s-tcost">—</div>
+          </div>
+        </div>
+      </section>
+
+      <!-- HISTORY — recorded minute-by-minute, 90 day retention -->
+      <section class="card history" aria-labelledby="l-hist">
+        <div class="card-head">
+          <span class="card-label" id="l-hist">History</span>
+          <span class="card-glyph" id="hist-latest">—</span>
+        </div>
+        <div class="hist-head">
+          <div class="hist-group" id="hist-metrics" role="group" aria-label="Metric"></div>
+          <div class="hist-group" id="hist-ranges" role="group" aria-label="Time range"></div>
+        </div>
+        <svg class="hist-chart" id="hist-chart" viewBox="0 0 1000 220"
+             preserveAspectRatio="none" role="img" aria-label="Metric history"></svg>
+        <p class="hist-meta" id="hist-meta">loading…</p>
       </section>
 
       <!-- ============ GPU SPOTLIGHT ============ -->
@@ -833,7 +895,6 @@
       <span id="foot-host">node <b>leaddneung</b></span>
     </div>
     <a class="netdata" href="/console" rel="noopener" id="foot-console">Command Console</a>
-    <a class="netdata" href="/netdata" rel="noopener">Netdata</a>
   </footer>
 
 </div>
@@ -929,6 +990,8 @@
 
   const fmtInt = (n) => (isNum(n) ? Math.round(n).toLocaleString() : "—");
   const fmt1   = (n) => (isNum(n) ? (Math.round(n * 10) / 10).toString() : "—");
+  // Baht keeps 2 decimals below 100 so small running totals stay readable.
+  const fmtBaht = (n) => (isNum(n) ? (n >= 100 ? Math.round(n).toString() : n.toFixed(2)) : "—");
 
   function relTime(sec) {
     if (!isNum(sec)) return "—";
@@ -1013,6 +1076,34 @@
     setValue("v-disk", disk.pct, '<span class="unit">%</span>');
     setRing("ring-disk", disk.pct, diskT);
     setText("s-disk", fmtInt(disk.used_gb) + " / " + fmtInt(disk.total_gb) + " GiB");
+
+    // ---- POWER METER (wall draw + electricity cost) ----
+    const pm = d.power_meter || {};
+    if (pm.available) {
+      setValue("v-power", pm.watts, '<span class="unit">W</span>');
+      setText("s-power", "฿" + fmtBaht(pm.thb_per_hour) + "/hr · ฿" + fmtBaht(pm.thb_today)
+        + " today · ฿" + fmtBaht(pm.thb_month_projected) + " proj");
+    } else {
+      setText("v-power", "—");
+      setText("s-power", "power-meter sampler down");
+    }
+
+    // ---- TRANSCRIPTION COST (electricity per hour of audio) ----
+    const tc = d.transcribe_cost || {};
+    if (tc.available) {
+      // Set directly rather than via setValue: that rounds to 1 decimal, which
+      // would render ฿0.20 as "0.2" and lose the satang.
+      const tcEl = $("v-tcost");
+      if (tcEl) {
+        tcEl.innerHTML = "฿" + fmtBaht(tc.thb_per_audio_hour)
+          + '<span class="unit">/audio-hr</span>';
+      }
+      setText("s-tcost", "฿" + fmtBaht(tc.thb_total) + " total · " + fmt1(tc.audio_hours)
+        + " h audio · " + fmt1(tc.realtime_factor) + "× realtime");
+    } else {
+      setText("v-tcost", "—");
+      setText("s-tcost", "no completed jobs logged");
+    }
 
     // ---- GPU ----
     const g = d.gpu || {};
@@ -1217,6 +1308,102 @@
     const el = $("foot-updated");
     if (el && el.dataset.prev && lastGood) el.textContent = relTime(lastGood);
   }
+
+  // ================= HISTORY CHART =================
+  // Reads the minute-resolution SQLite series recorded by history_recorder.py.
+  const HIST_METRICS = {
+    watts:    { label: "Power",    unit: " W",  color: "var(--cyan)" },
+    cpu_pct:  { label: "CPU",      unit: "%",   color: "var(--signal)" },
+    cpu_temp: { label: "CPU °C",   unit: "°C",  color: "var(--amber)" },
+    gpu_util: { label: "GPU",      unit: "%",   color: "var(--violet)" },
+    gpu_temp: { label: "GPU °C",   unit: "°C",  color: "var(--crit)" },
+    ram_pct:  { label: "RAM",      unit: "%",   color: "var(--signal)" },
+    disk_pct: { label: "Disk",     unit: "%",   color: "var(--ink-dim)" },
+  };
+  const HIST_RANGES = [["6h", 6], ["24h", 24], ["7d", 168], ["30d", 720]];
+  const hist = { metric: "watts", hours: 24, data: null };
+
+  function histButtons() {
+    const mBox = $("hist-metrics"), rBox = $("hist-ranges");
+    if (!mBox || !rBox) return;
+    mBox.innerHTML = ""; rBox.innerHTML = "";
+    for (const [key, cfg] of Object.entries(HIST_METRICS)) {
+      const b = document.createElement("button");
+      b.type = "button"; b.className = "hist-btn"; b.textContent = cfg.label;
+      b.setAttribute("aria-pressed", String(key === hist.metric));
+      b.onclick = () => { hist.metric = key; histButtons(); drawHistory(); };
+      mBox.appendChild(b);
+    }
+    for (const [label, hours] of HIST_RANGES) {
+      const b = document.createElement("button");
+      b.type = "button"; b.className = "hist-btn"; b.textContent = label;
+      b.setAttribute("aria-pressed", String(hours === hist.hours));
+      b.onclick = () => { hist.hours = hours; histButtons(); loadHistory(); };
+      rBox.appendChild(b);
+    }
+  }
+
+  async function loadHistory() {
+    try {
+      const r = await fetch("/history.json?hours=" + hist.hours, { cache: "no-store" });
+      hist.data = await r.json();
+    } catch (e) {
+      hist.data = { available: false, reason: "unreachable" };
+    }
+    drawHistory();
+  }
+
+  function drawHistory() {
+    const svg = $("hist-chart"), meta = $("hist-meta"), latest = $("hist-latest");
+    if (!svg) return;
+    const cfg = HIST_METRICS[hist.metric];
+    const d = hist.data;
+    svg.innerHTML = "";
+    if (!d || !d.available) {
+      meta.textContent = d && d.reason ? "history unavailable: " + d.reason : "history unavailable";
+      if (latest) latest.textContent = "—";
+      return;
+    }
+    const pts = (d.points || []).filter((p) => isNum(p[hist.metric]));
+    if (pts.length < 2) {
+      meta.textContent = "collecting… " + pts.length + " sample(s) so far, one per minute";
+      if (latest) latest.textContent = "—";
+      return;
+    }
+    const vals = pts.map((p) => p[hist.metric]);
+    const hi = Math.max(...vals), lo = Math.min(...vals);
+    const pad = (hi - lo) * 0.12 || Math.max(Math.abs(hi) * 0.1, 1);
+    const top = hi + pad, bot = lo - pad, span = top - bot || 1;
+    const W = 1000, H = 220, PADX = 4;
+    const x = (i) => PADX + (i / (pts.length - 1)) * (W - PADX * 2);
+    const y = (v) => H - 18 - ((v - bot) / span) * (H - 36);
+
+    const line = pts.map((p, i) => x(i).toFixed(1) + "," + y(p[hist.metric]).toFixed(1)).join(" ");
+    const ns = "http://www.w3.org/2000/svg";
+    const area = document.createElementNS(ns, "polygon");
+    area.setAttribute("points", line + " " + W + "," + H + " 0," + H);
+    area.setAttribute("fill", cfg.color); area.setAttribute("opacity", "0.13");
+    const stroke = document.createElementNS(ns, "polyline");
+    stroke.setAttribute("points", line); stroke.setAttribute("fill", "none");
+    stroke.setAttribute("stroke", cfg.color); stroke.setAttribute("stroke-width", "1.7");
+    stroke.setAttribute("vector-effect", "non-scaling-stroke");
+    stroke.setAttribute("stroke-linejoin", "round");
+    svg.append(area, stroke);
+
+    const cur = vals[vals.length - 1];
+    if (latest) latest.textContent = fmt1(cur) + cfg.unit;
+    const avg = vals.reduce((a, b) => a + b, 0) / vals.length;
+    const from = new Date(pts[0].t * 1000);
+    meta.textContent =
+      "min " + fmt1(lo) + cfg.unit + " · avg " + fmt1(avg) + cfg.unit +
+      " · max " + fmt1(hi) + cfg.unit +
+      " · " + pts.length + " points from " + from.toLocaleString() +
+      " (" + Math.round(d.bucket_seconds / 60) + " min buckets)";
+  }
+
+  histButtons();
+  loadHistory();
+  setInterval(loadHistory, 60000);
 
   tick();
   setInterval(tick, POLL_MS);

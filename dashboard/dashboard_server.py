@@ -15,6 +15,7 @@ import os
 import re
 import shutil
 import socket
+import sqlite3
 import subprocess
 import threading
 import time
@@ -250,6 +251,132 @@ def activity():
             "current_job": current_job, "job_running": bool(current_job)}
 
 
+POWER_SNAPSHOT = "/run/power-meter/metrics"
+POWER_STALE_AFTER = 60          # seconds; older means power-meter.service is down
+TRANSCRIBE_LOG = os.path.join(HOME, "transcribe-queue", "daemon.log")
+TRANSCRIBE_RECENT = 20          # jobs used for the CURRENT rate
+NOMINAL_BUSY_WATTS = 160.0      # measured on this box under transcribe load
+_DONE_LINE = re.compile(
+    r"done .+?: \d+ segs, (?P<audio>[\d.]+)s audio, (?P<proc>[\d.]+)s proc, "
+    r"rtf=(?P<rtf>[\d.]+)")
+
+
+def power_meter():
+    """Wall watts and electricity cost from power-meter.service.
+
+    That sampler runs as root because the RAPL energy counter is mode 0400;
+    it publishes a world-readable snapshot which is all this reads. Distinct
+    from power() above, which reports AC/battery state rather than draw.
+    """
+    try:
+        with open(POWER_SNAPSHOT) as f:
+            raw = f.read()
+    except OSError:
+        return {"available": False}
+    d = {}
+    for line in raw.splitlines():
+        k, _, v = line.partition("=")
+        try:
+            d[k.strip()] = float(v.strip())
+        except ValueError:
+            pass
+    if time.time() - d.get("timestamp", 0) > POWER_STALE_AFTER:
+        return {"available": False}
+    return {
+        "available": True,
+        "watts": round(d.get("total_watts", 0), 1),
+        "cpu_w": round(d.get("cpu_watts", 0), 1),
+        "gpu_w": round(d.get("gpu_watts", 0), 1),
+        "thb_per_hour": round(d.get("thb_per_hour", 0), 3),
+        "thb_today": round(d.get("thb_today", 0), 2),
+        "thb_month": round(d.get("thb_month", 0), 2),
+        "thb_month_projected": round(d.get("thb_month_projected", 0), 2),
+        "kwh_today": round(d.get("kwh_today", 0), 2),
+        "thb_per_kwh": d.get("thb_per_kwh", 0),
+    }
+
+
+def transcribe_cost(tariff):
+    """Electricity cost of transcription, from the daemon's own job log.
+
+    Billed against PROCESSING time, not audio length: an hour of audio at
+    rtf 0.25 only occupies the GPU for ~15 minutes. The rate uses only the
+    most recent jobs, because the log reaches back to the slower plain-mode
+    era and the lifetime median would overstate today's cost.
+    """
+    audio_s = proc_s = 0.0
+    rtfs = []
+    try:
+        with open(TRANSCRIBE_LOG, errors="replace") as f:
+            for m in _DONE_LINE.finditer(f.read()):
+                audio_s += float(m.group("audio"))
+                proc_s += float(m.group("proc"))
+                rtfs.append(float(m.group("rtf")))
+    except OSError:
+        return {"available": False}
+    if not rtfs or not tariff:
+        return {"available": False}
+    recent = rtfs[-TRANSCRIBE_RECENT:]
+    recent.sort()
+    median_rtf = recent[len(recent) // 2]
+    load_kw = NOMINAL_BUSY_WATTS / 1000.0
+    return {
+        "available": True,
+        "jobs": len(rtfs),
+        "audio_hours": round(audio_s / 3600, 1),
+        "proc_hours": round(proc_s / 3600, 1),
+        "realtime_factor": round(1 / median_rtf, 1) if median_rtf else 0,
+        "thb_per_audio_hour": round(median_rtf * load_kw * tariff, 3),
+        "thb_total": round(proc_s / 3600 * load_kw * tariff, 2),
+    }
+
+
+HISTORY_DB = os.path.join(ROOT, "history.db")
+HISTORY_METRICS = ("watts", "thb_hr", "cpu_pct", "cpu_temp", "load1",
+                   "ram_pct", "disk_pct", "gpu_util", "gpu_temp", "gpu_power",
+                   "q_pending", "q_done")
+HISTORY_MAX_POINTS = 400
+HISTORY_MAX_HOURS = 24 * 90
+
+
+def history_series(hours=24, max_points=HISTORY_MAX_POINTS):
+    """Averaged series over the last `hours`, bucketed to at most max_points.
+
+    Averaging in SQL rather than shipping every row keeps a 90-day window the
+    same size on the wire as a 6-hour one. Buckets are clamped to a whole
+    number of minutes because that is the sample interval.
+    """
+    hours = max(1, min(int(hours), HISTORY_MAX_HOURS))
+    span = hours * 3600
+    bucket = max(60, (span // max_points // 60) * 60 or 60)
+    since = int(time.time()) - span
+    cols = ", ".join(f"AVG({m}) AS {m}" for m in HISTORY_METRICS)
+    try:
+        conn = sqlite3.connect(f"file:{HISTORY_DB}?mode=ro", uri=True, timeout=5)
+    except sqlite3.Error:
+        return {"available": False, "reason": "no history database yet"}
+    try:
+        rows = conn.execute(
+            f"SELECT (ts / ?) * ? AS b, {cols} FROM samples "
+            f"WHERE ts >= ? GROUP BY b ORDER BY b",
+            (bucket, bucket, since),
+        ).fetchall()
+    except sqlite3.Error as err:
+        return {"available": False, "reason": str(err)[:120]}
+    finally:
+        conn.close()
+
+    points = []
+    for row in rows:
+        point = {"t": row[0]}
+        for i, metric in enumerate(HISTORY_METRICS, start=1):
+            value = row[i]
+            point[metric] = round(value, 2) if isinstance(value, float) else value
+        points.append(point)
+    return {"available": True, "hours": hours, "bucket_seconds": bucket,
+            "points": points}
+
+
 def build_status():
     with open("/proc/uptime") as f:
         up = int(float(f.readline().split()[0]))
@@ -272,6 +399,8 @@ def build_status():
     g, r = gpu(), mem()
     act = activity()
     pw = power()
+    pm = power_meter()
+    tc = transcribe_cost(pm.get("thb_per_kwh", 0) if pm.get("available") else 0)
     queue["current"] = act.get("current_job")
     # Long-running services + the alerting/protection safety-net (so a dead
     # watchdog/heartbeat is VISIBLE). Oneshots (fan-curve/battery-cap/...) are
@@ -280,7 +409,9 @@ def build_status():
         {"name": "transcribe-queue", "active": svc_active("transcribe-queue.service", user=True)},
         {"name": "watchdog", "active": svc_active("health-watchdog.timer", user=True)},
         {"name": "heartbeat", "active": svc_active("heartbeat.timer", user=True)},
-        {"name": "netdata", "active": svc_active("netdata")},
+        # netdata was purged 2026-08-06; power-meter is what feeds the cost
+        # figures now, so a dead sampler is what actually needs to be visible.
+        {"name": "power-meter", "active": svc_active("power-meter")},
         {"name": "tailscaled", "active": svc_active("tailscaled")},
         {"name": "firewall", "active": svc_active("ufw")},
         {"name": "fail2ban", "active": svc_active("fail2ban")},
@@ -309,6 +440,7 @@ def build_status():
             "cpu_pct": cpu_pct(), "cpu_temp": cpu_temp(), "fans": fans(),
             "load": [float(x) for x in open("/proc/loadavg").read().split()[:3]],
             "ram": r, "disk": disk, "gpu": g, "power": pw, "activity": act,
+            "power_meter": pm, "transcribe_cost": tc,
             "tailscale": {"status": "connected" if ts_ok else "down", "ip": ts_ip},
             "queue": queue, "services": services, "failed_units": fails, "alerts": alerts}
 
@@ -346,6 +478,35 @@ def get_status(public=False):
 
 
 # ----- command console (privileged) ----------------------------------------
+# /command runs `claude -p --dangerously-skip-permissions` as this user, who
+# holds NOPASSWD sudo. Treat it as remote root. The token is the primary gate;
+# these are the network gates behind it.
+ALLOW_LAN_COMMAND = False       # set True to re-permit plain-LAN command posts
+FUNNEL_HEADER = "Tailscale-Funnel-Request"
+
+
+def _command_source_ok(client_ip, headers):
+    """Whether a /command POST may proceed, as (ok, reason).
+
+    Funnel traffic is checked by HEADER, not address: tailscaled proxies it
+    from 127.0.0.1, so a public request would otherwise look like localhost.
+    """
+    if headers.get(FUNNEL_HEADER):
+        return False, "tailscale funnel (public)"
+    if client_ip.startswith("127.") or client_ip == "::1":
+        return True, "localhost"
+    if client_ip.startswith("100."):        # tailnet CGNAT 100.64.0.0/10
+        try:
+            second = int(client_ip.split(".")[1])
+        except (IndexError, ValueError):
+            return False, "malformed address"
+        if 64 <= second <= 127:
+            return True, "tailnet"
+    if ALLOW_LAN_COMMAND:
+        return True, "lan (explicitly allowed)"
+    return False, "off-tailnet source"
+
+
 def _secret():
     try:
         with open(SECRET_FILE) as f:
@@ -467,12 +628,18 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/runbook":
             # runbook.html shipped without a route; wire it up
             return self._file("runbook.html", "text/html; charset=utf-8")
-        if path == "/netdata":
-            host = self.headers.get("Host", "leaddneung:8080").split(":")[0]
-            self.send_response(302)
-            self.send_header("Location", f"http://{host}:19999/")
-            self.end_headers()
-            return
+        if path == "/history.json":
+            hours = 24
+            query = self.path.split("?", 1)[1] if "?" in self.path else ""
+            for part in query.split("&"):
+                key, _, value = part.partition("=")
+                if key == "hours":
+                    try:
+                        hours = int(value)
+                    except ValueError:
+                        pass
+            return self._send(200, "application/json",
+                              json.dumps(history_series(hours)))
         if path == "/status.json":
             return self._send(200, "application/json", json.dumps(get_status(public=False)))
         if path == "/status.pub.json":
@@ -483,6 +650,11 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         if self.path.split("?")[0] != "/command":
             return self.send_error(404)
+        ok, why = _command_source_ok(self.client_address[0], self.headers)
+        if not ok:
+            _audit(self.client_address[0], "", f"blocked-source ({why})")
+            return self._send(403, "application/json",
+                              json.dumps({"error": "forbidden"}))
         try:
             length = int(self.headers.get("Content-Length", 0))
             data = json.loads(self.rfile.read(length) or b"{}")
