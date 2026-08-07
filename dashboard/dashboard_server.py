@@ -78,16 +78,37 @@ def mem():
             "pct": round(100 * used / total) if total else 0}
 
 
+_GPU_UNKNOWN = {"name": "GPU", "util_pct": 0, "mem_used_mb": 0,
+                "mem_total_mb": 0, "temp_c": 0, "power_w": 0, "ok": False}
+
+
 def gpu():
+    """GPU stats, or a safe placeholder if nvidia-smi misbehaves.
+
+    Hardened 2026-08-07: a saturated GPU makes nvidia-smi slow and sometimes
+    makes it emit a warning or a truncated row. Indexing that blindly raised
+    IndexError inside build_status(), which took /status.json down entirely --
+    the dashboard went blind exactly when the machine was busiest, which is
+    when you most need it. Never let a flaky subprocess kill the whole page.
+    """
+    # 5s is not enough while the GPU is pinned; nvidia-smi queues behind work.
     out = _run(["nvidia-smi",
                 "--query-gpu=name,utilization.gpu,memory.used,memory.total,temperature.gpu,power.draw",
-                "--format=csv,noheader,nounits"])
+                "--format=csv,noheader,nounits"], timeout=20)
     if not out:
-        return {"name": "GPU", "util_pct": 0, "mem_used_mb": 0, "mem_total_mb": 0, "temp_c": 0, "power_w": 0}
-    p = [x.strip() for x in out.split(",")]
-    return {"name": p[0].replace("NVIDIA GeForce ", "").replace(" Laptop GPU", ""),
-            "util_pct": float(p[1]), "mem_used_mb": int(float(p[2])), "mem_total_mb": int(float(p[3])),
-            "temp_c": int(float(p[4])), "power_w": round(float(p[5]))}
+        return dict(_GPU_UNKNOWN)
+    # Take the first device row only, and require every field to be present.
+    p = [x.strip() for x in out.splitlines()[0].split(",")]
+    if len(p) < 6:
+        return dict(_GPU_UNKNOWN)
+    try:
+        return {"name": p[0].replace("NVIDIA GeForce ", "").replace(" Laptop GPU", ""),
+                "util_pct": float(p[1]), "mem_used_mb": int(float(p[2])),
+                "mem_total_mb": int(float(p[3])), "temp_c": int(float(p[4])),
+                "power_w": round(float(p[5])), "ok": True}
+    except ValueError:
+        # e.g. "[N/A]" in a field while the driver is under pressure
+        return dict(_GPU_UNKNOWN)
 
 
 def svc_active(name, user=False):
@@ -468,11 +489,27 @@ def _redact_public(data):
 
 
 def get_status(public=False):
+    """Cached status. A failing collector degrades the page, never kills it.
+
+    Hardened 2026-08-07: an exception anywhere in build_status() used to
+    propagate out of the request handler, so /status.json returned nothing and
+    the UI showed SERVER OFFLINE even though the box was perfectly healthy.
+    Serve the last good snapshot instead, flagged stale.
+    """
     now = time.time()
     with _status_lock:
         if not _status_cache["data"] or now - _status_cache["ts"] > STATUS_TTL:
-            _status_cache["data"] = build_status()
-            _status_cache["ts"] = now
+            try:
+                _status_cache["data"] = build_status()
+                _status_cache["ts"] = now
+            except Exception as err:  # noqa: BLE001 - degrade, never 500
+                stale = dict(_status_cache["data"] or {})
+                stale["collector_error"] = f"{type(err).__name__}: {err}"[:200]
+                stale.setdefault("alerts", []).append(
+                    {"level": "warn", "msg": "collector error, showing last good data"})
+                stale["stale"] = True
+                _status_cache["data"] = stale
+                _status_cache["ts"] = now
         data = _status_cache["data"]
     return _redact_public(data) if public else data
 

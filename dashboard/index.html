@@ -1010,8 +1010,8 @@
     if (alerts.some((a) => a && a.level === "crit")) return "crit";
 
     const g = d.gpu || {};
-    const vramPct = isNum(g.mem_used_mb) && isNum(g.mem_total_mb) && g.mem_total_mb > 0
-      ? (g.mem_used_mb / g.mem_total_mb) * 100 : NaN;
+    const vramPct = g.ok !== false && isNum(g.mem_used_mb) && isNum(g.mem_total_mb)
+      && g.mem_total_mb > 0 ? (g.mem_used_mb / g.mem_total_mb) * 100 : NaN;
 
     const critHit =
       tone(d.cpu_pct, T.cpu) === "crit" ||
@@ -1107,18 +1107,23 @@
 
     // ---- GPU ----
     const g = d.gpu || {};
-    setText("gpu-name", g.name || "GPU");
-    setText("gpu-sub", "NVIDIA " + (g.name || "GPU"));
-    const utilT = tone(g.util_pct, T.gpu);
-    setRing("ring-gpu", g.util_pct, utilT);
+    // ok === false means nvidia-smi could not be read (it goes flaky when the
+    // GPU is saturated). Show that plainly: rendering 0% / 0°C would claim the
+    // card is idle and cold when the truth is that we do not know.
+    const gpuOk = g.ok !== false;
+    setText("gpu-name", gpuOk ? (g.name || "GPU") : "GPU");
+    setText("gpu-sub", gpuOk ? "NVIDIA " + (g.name || "GPU")
+                             : "GPU telemetry unavailable");
+    const utilT = gpuOk ? tone(g.util_pct, T.gpu) : "dim";
+    setRing("ring-gpu", gpuOk ? g.util_pct : NaN, utilT);
     const utilNode = $("ring-gpu-val");
-    if (utilNode) utilNode.textContent = isNum(g.util_pct) ? g.util_pct + "%" : "—";
+    if (utilNode) utilNode.textContent = gpuOk && isNum(g.util_pct) ? g.util_pct + "%" : "—";
 
-    const tempT = tone(g.temp_c, T.temp);
-    setValue("v-gpu-temp", g.temp_c, "<small>°C</small>");
+    const tempT = gpuOk ? tone(g.temp_c, T.temp) : "dim";
+    setValue("v-gpu-temp", gpuOk ? g.temp_c : NaN, "<small>°C</small>");
     $("gm-temp").dataset.tone = toneAttr(tempT);
 
-    setValue("v-gpu-power", g.power_w, "<small>W</small>");
+    setValue("v-gpu-power", gpuOk ? g.power_w : NaN, "<small>W</small>");
     setValue("v-gpu-fan", d.fans ? d.fans.gpu : null, "<small>RPM</small>");
 
     const vramPct = isNum(g.mem_used_mb) && isNum(g.mem_total_mb) && g.mem_total_mb > 0
