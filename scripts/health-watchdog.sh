@@ -23,7 +23,7 @@ M=$(free | awk '/Mem:/{printf "%d", $3/$2*100}'); [ "$M" -ge 92 ] && alert mem h
 T=$(nvidia-smi --query-gpu=temperature.gpu --format=csv,noheader,nounits 2>/dev/null | head -1); [ -n "$T" ] && [ "$T" -ge 90 ] && alert gputemp urgent "leaddneung: GPU ${T}C" "GPU temperature ${T}C." || clear_state gputemp
 
 # USER services: try to auto-restart, then alert with the outcome
-for s in transcribe-queue.service dashboard.service; do
+for s in transcribe-queue.service dashboard.service tg-bot.service; do
   if systemctl --user is-active --quiet "$s" 2>/dev/null; then
     clear_state "svc_$s"
   else
@@ -37,8 +37,11 @@ for s in transcribe-queue.service dashboard.service; do
   fi
 done
 
-# SYSTEM services: can't restart without sudo -> alert only (they carry their own Restart=)
-for s in netdata tailscaled; do
+# SYSTEM services: cannot restart without sudo -> alert only (they carry their own Restart=)
+# netdata REMOVED 2026-08-08: it was purged on 2026-08-06, so this loop pushed a
+# false "netdata down" alert every 30 min for two days. A false alarm trains you
+# to ignore the channel. Do not re-add a service that is not installed.
+for s in tailscaled; do
   systemctl is-active --quiet "$s" 2>/dev/null && clear_state "svc_$s" || alert "svc_$s" high "leaddneung: $s down" "System service $s not active."
 done
 
