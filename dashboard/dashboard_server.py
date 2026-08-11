@@ -111,6 +111,158 @@ def gpu():
         return dict(_GPU_UNKNOWN)
 
 
+# ----- GPU clocks and throttling -------------------------------------------
+# Ported 2026-08-11 from the retired ~/server-monitor/collectors/gpu.py, which
+# was the only thing on this box that ever showed throttle state. Thermal is the
+# documented limiting factor here (the vBIOS ignores `-pl`, so gpu-clock-cap.service
+# pins the clock with `-lgc` instead), and until now there was no way to see whether
+# that cap was holding.
+#
+# DELIBERATELY A SEPARATE nvidia-smi CALL from gpu(). The driver renamed these
+# fields (`clocks_throttle_reasons.*` -> `clocks_event_reasons.*`; 595.84 still
+# accepts the old names as input, which is why the old names are used here for
+# the widest compatibility). If a future driver drops that alias, this query dies.
+# Folding it into gpu()'s query would then blank the whole GPU tile, turning a
+# nice-to-have into a regression. Isolated, a break costs only this section.
+_GPU_CLOCK_FIELDS = [
+    "clocks.sm", "clocks.max.sm",
+    "clocks_throttle_reasons.sw_thermal_slowdown",
+    "clocks_throttle_reasons.hw_thermal_slowdown",
+    "clocks_throttle_reasons.sw_power_cap",
+]
+
+# `nvidia-smi -q` is far heavier than --query-gpu, and the cap only changes when a
+# unit file does, so both are refreshed on a slow timer instead of every 2s poll.
+_GPU_SLOW_TTL = 60.0
+_gpu_slow_cache = {"ts": 0.0, "data": {}}
+# This is a ThreadingHTTPServer. The cache happens to be safe today only because its
+# single caller sits inside _status_lock, which is an invariant nothing enforces and
+# the next caller would quietly break. Owning a lock costs nothing here.
+_gpu_slow_lock = threading.Lock()
+
+
+def _flag(value):
+    return value.strip().lower() in ("active", "1", "true")
+
+
+def _gpu_clock_cap():
+    """The applied `-lgc` ceiling in MHz, or None if no cap is in force.
+
+    The lock set by `nvidia-smi -lgc` appears NOWHERE in `nvidia-smi -q` on driver
+    595.84, so it has to be read back off the unit that sets it. This matters a
+    lot for honesty: clocks.max.sm reports the HARDWARE max (2100 MHz), so showing
+    current/max would render the intended 1500 MHz ceiling as a permanent "71%"
+    and read as constant throttling. Percentages here are against the cap when one
+    is active, and the hardware max is kept alongside as context.
+    """
+    if _run(["systemctl", "is-active", "gpu-clock-cap.service"]) != "active":
+        return None
+    unit = _run(["systemctl", "cat", "gpu-clock-cap.service"])
+    # Accept every spelling nvidia-smi does. A stricter pattern silently returns
+    # None on a legitimate variant, which does not fail loudly: it falls back to the
+    # 2100 MHz hardware max and renders a correctly capped GPU as permanently
+    # throttled, i.e. precisely the bug this function exists to prevent.
+    #   -lgc 300,1500 | -lgc 300, 1500 | -lgc 1500 | --lock-gpu-clocks=300,1500
+    match = re.search(r"(?:-lgc|--lock-gpu-clocks)[\s=]+(\d+)(?:\s*,\s*(\d+))?", unit)
+    if not match:
+        return None
+    # Range form gives min,max so the ceiling is the second value; the single-value
+    # form locks to one clock, which is itself the ceiling.
+    return int(match.group(2) or match.group(1))
+
+
+def _gpu_throttle_counters():
+    """Cumulative microseconds the driver has spent in each throttle state.
+
+    Worth more than the instantaneous flags: a spot check almost never lands on a
+    slowdown, but the counter says whether it has been happening at all. These are
+    since driver load, so they only ever climb; the UI shows them as totals, not
+    as a rate.
+    """
+    out = _run(["nvidia-smi", "-q", "-d", "PERFORMANCE"], timeout=20)
+    if not out:
+        return {}
+    wanted = {"SW Power Capping": "power_us", "SW Thermal Slowdown": "thermal_sw_us",
+              "HW Thermal Slowdown": "thermal_hw_us"}
+    found, header_indent = {}, None
+    for line in out.splitlines():
+        if header_indent is None:
+            if ("Clocks Event Reasons Counters" in line
+                    or "Clocks Throttle Reasons Counters" in line):
+                header_indent = len(line) - len(line.lstrip())
+            continue
+        # Scope by indentation and stop at the first section that is not deeper than
+        # the header. Reading "until something looks wrong" let a multi-GPU report
+        # run straight past device 0's block, so device N's counters overwrote it
+        # and were then shown beside device 0's live flags. Only the first device is
+        # parsed, matching gpu_clocks(), which also takes the first row only.
+        if line.strip() and (len(line) - len(line.lstrip())) <= header_indent:
+            break
+        label, _, value = line.partition(":")
+        if label.strip() in wanted:
+            digits = re.match(r"(\d+)", value.strip())
+            if digits:
+                found[wanted[label.strip()]] = int(digits.group(1))
+    return found
+
+
+def _gpu_slow():
+    with _gpu_slow_lock:
+        now = time.time()
+        if now - _gpu_slow_cache["ts"] > _GPU_SLOW_TTL:
+            try:
+                _gpu_slow_cache["data"] = {"cap_mhz": _gpu_clock_cap(),
+                                           "counters": _gpu_throttle_counters()}
+            except Exception:
+                _gpu_slow_cache["data"] = {}
+            _gpu_slow_cache["ts"] = now
+        return _gpu_slow_cache["data"]
+
+
+def gpu_clocks():
+    """Clock headroom and throttle state. {"ok": False} if unavailable.
+
+    NOTE gpu_idle is intentionally NOT treated as throttling. It is reported as a
+    clocks-event reason and is Active whenever the box is quiet, so counting it
+    would paint an idle machine as permanently throttled. Only thermal and power
+    slowdowns mean something is being taken away from you.
+    """
+    out = _run(["nvidia-smi", f"--query-gpu={','.join(_GPU_CLOCK_FIELDS)}",
+                "--format=csv,noheader,nounits"], timeout=20)
+    if not out:
+        return {"ok": False}
+    p = [x.strip() for x in out.splitlines()[0].split(",")]
+    if len(p) < len(_GPU_CLOCK_FIELDS):
+        return {"ok": False}
+    try:
+        cur, hw_max = int(float(p[0])), int(float(p[1]))
+    except ValueError:
+        return {"ok": False}
+
+    slow = _gpu_slow()
+    cap = slow.get("cap_mhz")
+    ceiling = cap or hw_max
+    counters = slow.get("counters", {})
+    return {
+        "ok": True,
+        "mhz": cur,
+        "cap_mhz": cap,
+        "max_mhz": hw_max,
+        "pct_of_ceiling": round(cur / ceiling * 100) if ceiling else 0,
+        "throttled_thermal": _flag(p[2]) or _flag(p[3]),
+        "throttled_power": _flag(p[4]),
+        # None, not 0, when the counters block could not be read. Defaulting to 0
+        # renders "0s thermal" and reads as a confident "never throttled" when the
+        # truth is "unknown" -- the same class of lie this whole feature was added
+        # to remove. The UI shows None as "lifetime totals unavailable".
+        "thermal_secs": (round((counters["thermal_sw_us"] + counters["thermal_hw_us"]) / 1e6)
+                         if "thermal_sw_us" in counters and "thermal_hw_us" in counters
+                         else None),
+        "power_secs": (round(counters["power_us"] / 1e6)
+                       if "power_us" in counters else None),
+    }
+
+
 def svc_active(name, user=False):
     cmd = ["systemctl", "--user", "is-active", name] if user else ["systemctl", "is-active", name]
     return _run(cmd) == "active"
@@ -418,6 +570,7 @@ def build_status():
     except Exception:
         pass
     g, r = gpu(), mem()
+    g["clocks"] = gpu_clocks()
     act = activity()
     pw = power()
     pm = power_meter()

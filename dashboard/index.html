@@ -428,6 +428,22 @@
   .gpu-metric[data-tone="amber"] .v { color: var(--amber); }
   .gpu-metric[data-tone="crit"]  .v { color: var(--crit); }
 
+  /* Throttle line. Reads as quiet text when nothing is being taken away, and
+     only earns colour when the clock is actually being held down. */
+  .gpu-throttle {
+    margin-top: 0.7rem; font-family: var(--mono); font-size: 0.66rem;
+    letter-spacing: 0.06em; color: var(--ink-dim); display: flex;
+    flex-wrap: wrap; gap: 0.55rem; align-items: baseline;
+  }
+  .gpu-throttle .state { font-weight: 600; letter-spacing: 0.1em; }
+  /* --signal is this sheet's "nominal green". There is no --ok token; naming one
+     here made the healthy state silently fall back to dim grey. */
+  .gpu-throttle[data-tone="ok"]    .state { color: var(--signal); }
+  .gpu-throttle[data-tone="amber"] .state { color: var(--amber); }
+  .gpu-throttle[data-tone="crit"]  .state { color: var(--crit); }
+  .gpu-throttle[data-tone="dim"]   .state { color: var(--ink-dim); }
+  .gpu-throttle .sep { opacity: 0.35; }
+
   .gpu-ring-wrap { display: grid; place-items: center; gap: 0.4rem; }
   .gpu-ring-cap {
     font-family: var(--mono); font-size: 0.64rem; letter-spacing: 0.16em;
@@ -826,6 +842,10 @@
                 <div class="k">Power Draw</div>
                 <div class="v" id="v-gpu-power">—<small>W</small></div>
               </div>
+              <div class="gpu-metric" id="gm-clock">
+                <div class="k">Core Clock</div>
+                <div class="v" id="v-gpu-clock">—<small>MHz</small></div>
+              </div>
               <div class="gpu-metric" id="gm-fan">
                 <div class="k">Fan</div>
                 <div class="v" id="v-gpu-fan">—<small>RPM</small></div>
@@ -839,6 +859,11 @@
                  aria-label="GPU memory used" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
               <i></i>
             </div>
+            <p class="gpu-throttle" id="gpu-throttle" data-tone="dim" role="status">
+              <span class="state" id="gpu-throttle-state">—</span>
+              <span class="sep">·</span>
+              <span id="gpu-throttle-totals">lifetime totals unavailable</span>
+            </p>
           </div>
         </div>
       </section>
@@ -989,6 +1014,14 @@
   }
 
   const fmtInt = (n) => (isNum(n) ? Math.round(n).toLocaleString() : "—");
+  // Seconds to a compact human duration. Throttle counters run from seconds to
+  // hours over a long uptime, so a raw seconds figure stops being readable fast.
+  const fmtDur = (s) => {
+    if (!isNum(s)) return "—";
+    if (s < 60) return Math.round(s) + "s";
+    if (s < 3600) return Math.round(s / 60) + "m";
+    return (s / 3600).toFixed(1) + "h";
+  };
   const fmt1   = (n) => (isNum(n) ? (Math.round(n * 10) / 10).toString() : "—");
   // Baht keeps 2 decimals below 100 so small running totals stay readable.
   const fmtBaht = (n) => (isNum(n) ? (n >= 100 ? Math.round(n).toString() : n.toFixed(2)) : "—");
@@ -1133,6 +1166,44 @@
     $("gm-vram").dataset.tone = toneAttr(vramT);
     setText("gpu-mem-line", fmtInt(g.mem_used_mb) + " / " + fmtInt(g.mem_total_mb) + " MiB VRAM");
     setMeter("meter-vram", vramPct, vramT === "ok" ? "cyan" : vramT);
+
+    // ---- GPU clock + throttle ----
+    // The ceiling shown is the APPLIED cap (gpu-clock-cap.service pins -lgc 300,1500),
+    // not the 2100 MHz hardware max. Against the hardware number a healthy capped
+    // GPU would sit at 71% forever and read as permanently throttled.
+    const clk = g.clocks || {};
+    const clkOk = clk.ok === true;
+    const ceiling = clk.cap_mhz || clk.max_mhz;
+    setValue("v-gpu-clock", clkOk ? clk.mhz : NaN,
+             clkOk && ceiling
+               ? "<small>/" + ceiling + (clk.cap_mhz ? " cap" : " max") + "</small>"
+               : "<small>MHz</small>");
+
+    // Tone tracks THROTTLING, not clock height. A low clock on an idle box is
+    // correct behaviour, and colouring it would cry wolf on a resting machine.
+    let clkTone = "dim";
+    if (clkOk) clkTone = clk.throttled_thermal ? "crit"
+                       : clk.throttled_power   ? "amber" : "ok";
+    $("gm-clock").dataset.tone = toneAttr(clkTone === "ok" ? "ok" : clkTone);
+
+    const thr = $("gpu-throttle");
+    if (thr) {
+      thr.dataset.tone = clkTone;
+      let state = "TELEMETRY UNAVAILABLE";
+      if (clkOk) {
+        if (clk.throttled_thermal)   state = "THERMAL THROTTLING NOW";
+        else if (clk.throttled_power) state = "POWER CAP LIMITING NOW";
+        else state = "NOT THROTTLED";
+      }
+      setText("gpu-throttle-state", state);
+      // Counters are cumulative since driver load, so they are labelled as totals
+      // rather than implying a current rate.
+      setText("gpu-throttle-totals",
+              clkOk && (isNum(clk.thermal_secs) || isNum(clk.power_secs))
+                ? "since driver load: " + fmtDur(clk.thermal_secs) + " thermal, "
+                  + fmtDur(clk.power_secs) + " power cap"
+                : "lifetime totals unavailable");
+    }
 
     // ---- Tailscale ----
     const ts = d.tailscale || {};
