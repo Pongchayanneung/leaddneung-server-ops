@@ -2,7 +2,21 @@
 # Daily activity report for the shared 'collab' friend account. Runs as root
 # (systemd system timer) so it can read /home/collab and process accounting.
 U=collab
-NTFY="https://ntfy.sh/YOUR_NTFY_TOPIC"
+# WHY THE URL IS NOT INLINE (do not paste it back):
+# An ntfy topic URL is a bearer capability, not an address: anyone who can read the string
+# can read every alert this box sends AND post convincing fakes to it. This file is readable
+# by others and neung/tong/collab are all in the sudo group, so the topic sat here in
+# cleartext until it was rotated on 2026-08-12. It is now read at run time from a mode-600
+# file, the same convention as ~neung/transcribe-opt/health-watchdog.sh.
+#
+# ROTATION TRANSITION: while ntfy.url.old exists, every message is sent to BOTH topics, so a
+# phone still subscribed to the old topic keeps receiving during the changeover.
+# TO FINISH THE ROTATION, DELETE /home/neung/.config/leaddneung/ntfy.url.old -- that is all
+# it takes, no code change here.
+NTFY_FILE="/home/neung/.config/leaddneung/ntfy.url"
+NTFY_OLD_FILE="$NTFY_FILE.old"
+NTFY=$([ -r "$NTFY_FILE" ] && cat "$NTFY_FILE")
+NTFY_OLD=$([ -r "$NTFY_OLD_FILE" ] && cat "$NTFY_OLD_FILE")
 now=$(date '+%H:%M %d/%m')
 
 onl=$(who 2>/dev/null | grep -cw "$U")
@@ -33,5 +47,13 @@ ${cmds:+คำสั่งล่าสุด: $cmds
 ${last3:-    (ยังไม่มีบันทึก)}"
 
 prio="low"; [ "$onl" -gt 0 ] && prio="default"
-curl -s -H "Title: กิจกรรมเพื่อน collab" -H "Priority: $prio" -H "Tags: eyes" -d "$body" "$NTFY" >/dev/null 2>&1
+if [ -z "$NTFY" ]; then
+  echo "friend-report: NOT SENT (no ntfy URL at $NTFY_FILE)" >&2
+else
+  for u in "$NTFY" ${NTFY_OLD:+"$NTFY_OLD"}; do
+    curl -s -H "Title: กิจกรรมเพื่อน collab" -H "Priority: $prio" -H "Tags: eyes" -d "$body" "$u" >/dev/null 2>&1
+  done
+fi
 echo "$body"
+# blind alerting must fail the unit, not pass quietly
+[ -n "$NTFY" ] || exit 1

@@ -268,14 +268,52 @@ def svc_active(name, user=False):
     return _run(cmd) == "active"
 
 
+# At most this many unit names are spelled out in one alert. Past four the line
+# stops fitting a phone-width card, and a mass failure is a "go and look at the
+# box" event rather than something you triage from the banner. The remainder is
+# always COUNTED in the message, never silently dropped.
+ALERT_MAX_NAMED_UNITS = 4
+
+
 def failed_units():
-    """Count systemd units in the failed state (system + user) — a generic net
-    that catches ANY unit failing, not just the named ones."""
-    n = 0
-    for cmd in (["systemctl", "--failed", "--no-legend", "--plain"],
-                ["systemctl", "--user", "--failed", "--no-legend", "--plain"]):
-        n += sum(1 for line in _run(cmd).splitlines() if line.strip())
-    return n
+    """NAMES of the systemd units in the failed state (system + user) — a generic
+    net that catches ANY unit failing, not just the named ones.
+
+    Returns a list; the count is len(). It used to return only the count, which
+    rendered as "2 systemd unit(s) failed" and forced an ssh to find out which.
+    That is the same unnamed-alert weakness already removed from
+    ~/transcribe-opt/health-watchdog.sh, whose pings are now titled
+    "leaddneung: <unit> failed"; the dashboard was left behind. The names are
+    free: both subprocesses were ALREADY printing them and the old code threw
+    the text away just to count lines.
+
+    A name is scope-tagged only when the SAME unit name is failed in both
+    scopes, which is the only case where a bare name is ambiguous.
+    """
+    found = []
+    for scope, cmd in (("system", ["systemctl", "--failed", "--no-legend", "--plain"]),
+                       ("user", ["systemctl", "--user", "--failed", "--no-legend", "--plain"])):
+        for line in _run(cmd).splitlines():
+            parts = line.split()
+            if parts:
+                found.append((parts[0], scope))
+    names = [n for n, _ in found]
+    return [f"{n} ({s})" if names.count(n) > 1 else n for n, s in found]
+
+
+def failed_units_msg(units):
+    """One alert line that says WHICH units failed, truncated but never silently.
+
+    One unit reads as a sentence ("offsite-backup.service failed"); several lead
+    with the count so the scale of the problem is the first thing read.
+    """
+    total = len(units)
+    if total == 1:
+        return f"{units[0]} failed"
+    shown = units[:ALERT_MAX_NAMED_UNITS]
+    omitted = total - len(shown)
+    return (f"{total} units failed: " + ", ".join(shown)
+            + (f" (+{omitted} more)" if omitted else ""))
 
 
 def cpu_temp():
@@ -428,10 +466,21 @@ POWER_SNAPSHOT = "/run/power-meter/metrics"
 POWER_STALE_AFTER = 60          # seconds; older means power-meter.service is down
 TRANSCRIBE_LOG = os.path.join(HOME, "transcribe-queue", "daemon.log")
 TRANSCRIBE_RECENT = 20          # jobs used for the CURRENT rate
-NOMINAL_BUSY_WATTS = 160.0      # measured on this box under transcribe load
+# NOMINAL_BUSY_WATTS moved down to the busy-wattage block, next to the measured
+# figure that now supersedes it. See busy_watts().
+# Two formats, both live in the same log file forever.
+#   pre  2026-08-12: "... 56.6s audio, 8.9s proc, rtf=0.157"
+#   post 2026-08-12: "... dur=180.0s, vad_speech=11.8s, covered=118.7s
+#                     (65.9% of duration), proc=28.5s, rtf=0.158, method=..."
+# The daemon relabelled its numbers because the old "Ns audio" was actually
+# VAD speech, not duration -- it under-reported a 6754.6s lecture as 1548.7s.
+# Match both: dropping the old branch would silently zero out years of history,
+# and dropping the new one would silently freeze this panel at 2026-08-12.
 _DONE_LINE = re.compile(
-    r"done .+?: \d+ segs, (?P<audio>[\d.]+)s audio, (?P<proc>[\d.]+)s proc, "
-    r"rtf=(?P<rtf>[\d.]+)")
+    r"done .+?: \d+ segs, "
+    r"(?:(?P<audio_old>[\d.]+)s audio, (?P<proc_old>[\d.]+)s proc"
+    r"|dur=(?P<audio_new>[\d.]+)s,.*?proc=(?P<proc_new>[\d.]+)s)"
+    r", rtf=(?P<rtf>[\d.]+)")
 
 
 def power_meter():
@@ -476,14 +525,18 @@ def transcribe_cost(tariff):
     rtf 0.25 only occupies the GPU for ~15 minutes. The rate uses only the
     most recent jobs, because the log reaches back to the slower plain-mode
     era and the lifetime median would overstate today's cost.
+
+    The load figure comes from busy_watts(), which measures it from recorded
+    history where it can. `watts_measured` says whether it did; when it is
+    False every baht below rests on a nominal, not on an observation.
     """
     audio_s = proc_s = 0.0
     rtfs = []
     try:
         with open(TRANSCRIBE_LOG, errors="replace") as f:
             for m in _DONE_LINE.finditer(f.read()):
-                audio_s += float(m.group("audio"))
-                proc_s += float(m.group("proc"))
+                audio_s += float(m.group("audio_old") or m.group("audio_new"))
+                proc_s += float(m.group("proc_old") or m.group("proc_new"))
                 rtfs.append(float(m.group("rtf")))
     except OSError:
         return {"available": False}
@@ -492,7 +545,8 @@ def transcribe_cost(tariff):
     recent = rtfs[-TRANSCRIBE_RECENT:]
     recent.sort()
     median_rtf = recent[len(recent) // 2]
-    load_kw = NOMINAL_BUSY_WATTS / 1000.0
+    bw = busy_watts()
+    load_kw = bw["watts"] / 1000.0
     return {
         "available": True,
         "jobs": len(rtfs),
@@ -501,6 +555,13 @@ def transcribe_cost(tariff):
         "realtime_factor": round(1 / median_rtf, 1) if median_rtf else 0,
         "thb_per_audio_hour": round(median_rtf * load_kw * tariff, 3),
         "thb_total": round(proc_s / 3600 * load_kw * tariff, 2),
+        # Provenance travels WITH the number. A consumer that shows the baht
+        # without these is showing a figure it cannot vouch for.
+        "busy_watts": bw["watts"],
+        "watts_measured": bw["measured"],
+        "watts_samples": bw["samples"],
+        "watts_threshold_pct": bw["util_threshold_pct"],
+        "watts_min_samples": bw["min_samples"],
     }
 
 
@@ -510,6 +571,90 @@ HISTORY_METRICS = ("watts", "thb_hr", "cpu_pct", "cpu_temp", "load1",
                    "q_pending", "q_done")
 HISTORY_MAX_POINTS = 400
 HISTORY_MAX_HOURS = 24 * 90
+
+# ===================== BUSY WATTAGE (measured, not assumed) =====================
+# gpu_util at or above this counts as "the box is working". 50 is inherited from
+# the retired ~/server-monitor collector (powerprofile.BUSY_UTILISATION), which
+# learned this machine's busy draw the same way from live samples. The recorded
+# history says the exact cut barely matters here: utilisation on this host is
+# bimodal — of 6948 stored samples only 2 land anywhere in the whole 10–50% band —
+# so 50 / 70 / 90 all return ~128 W. 50 is kept because it is the threshold the
+# earlier cost figures were learned with, and because dropping lower would start
+# folding idle minutes that caught one blip into the busy mean.
+BUSY_UTIL_PCT = 50.0
+# Under this many busy samples the mean is not evidence, so the nominal is used
+# INSTEAD and the payload says so. Samples are one per minute, so 30 is half an
+# hour of real GPU-busy time. The old in-memory collector accepted 6, which was
+# defensible for a figure that re-sharpened every minute the process stayed up;
+# this is a one-shot query against stored history that nothing revisits, so it
+# asks for more evidence before it is allowed to call itself a measurement.
+BUSY_MIN_SAMPLES = 30
+# The nominal. Used ONLY when history cannot support a measured figure, and never
+# without `measured: False` travelling alongside it.
+NOMINAL_BUSY_WATTS = 160.0
+# Same 60s slow-cache pattern as _gpu_slow(): this is a SQL aggregate over up to
+# 90 days of rows and the status endpoint is polled every 2 seconds. Lock for the
+# same reason too — ThreadingHTTPServer means concurrent viewers really do land
+# here at once, and relying on a caller's lock is an invariant nothing enforces.
+_BUSY_WATTS_TTL = 60.0
+_busy_watts_cache = {"ts": 0.0, "data": None}
+_busy_watts_lock = threading.Lock()
+
+
+def _query_busy_watts():
+    """(mean wall watts, sample count) over history taken while the GPU worked.
+
+    Column note: the wall figure is `watts`. `gpu_power` is the card on its own
+    and would undercount the box by roughly half. `watts > 0` drops the minutes
+    when power-meter.service was down, which the recorder stores as 0 — averaging
+    those in would quietly drag the mean toward zero and UNDERstate cost, the
+    same class of silent wrongness as the nominal it replaces.
+    """
+    since = int(time.time()) - HISTORY_MAX_HOURS * 3600
+    try:
+        conn = sqlite3.connect(f"file:{HISTORY_DB}?mode=ro", uri=True, timeout=5)
+    except sqlite3.Error:
+        return None, 0
+    try:
+        count, avg = conn.execute(
+            "SELECT COUNT(*), AVG(watts) FROM samples "
+            "WHERE ts >= ? AND gpu_util >= ? AND watts > 0",
+            (since, BUSY_UTIL_PCT),
+        ).fetchone()
+    except sqlite3.Error:
+        return None, 0
+    finally:
+        conn.close()
+    return avg, int(count or 0)
+
+
+def busy_watts():
+    """Wattage to bill work against: {watts, measured, samples, ...}.
+
+    `measured` False means the value IS the nominal and has not been observed on
+    this machine. Presenting a nameplate number as if it had been measured — and
+    presenting a mean of three samples as if it were solid — are the two specific
+    dishonesties this function exists to remove, so no caller can get the value
+    without also getting where it came from.
+    """
+    with _busy_watts_lock:
+        now = time.time()
+        if (_busy_watts_cache["data"] is None
+                or now - _busy_watts_cache["ts"] > _BUSY_WATTS_TTL):
+            try:
+                avg, count = _query_busy_watts()
+            except Exception:
+                avg, count = None, 0
+            ok = avg is not None and count >= BUSY_MIN_SAMPLES
+            _busy_watts_cache["data"] = {
+                "watts": round(avg, 1) if ok else NOMINAL_BUSY_WATTS,
+                "measured": ok,
+                "samples": count,
+                "util_threshold_pct": BUSY_UTIL_PCT,
+                "min_samples": BUSY_MIN_SAMPLES,
+            }
+            _busy_watts_cache["ts"] = now
+        return _busy_watts_cache["data"]
 
 
 def history_series(hours=24, max_points=HISTORY_MAX_POINTS):
@@ -592,8 +737,8 @@ def build_status():
     ]
     fails = failed_units()
     alerts = []
-    if fails > 0:
-        alerts.append({"level": "crit", "msg": f"{fails} systemd unit(s) failed"})
+    if fails:
+        alerts.append({"level": "crit", "msg": failed_units_msg(fails)})
     if disk["pct"] >= 90:
         alerts.append({"level": "crit", "msg": f"Disk {disk['pct']}%"})
     if r["pct"] >= 92:
@@ -616,7 +761,10 @@ def build_status():
             "ram": r, "disk": disk, "gpu": g, "power": pw, "activity": act,
             "power_meter": pm, "transcribe_cost": tc,
             "tailscale": {"status": "connected" if ts_ok else "down", "ip": ts_ip},
-            "queue": queue, "services": services, "failed_units": fails, "alerts": alerts}
+            # failed_units stays an INT so any existing scraper keeps working;
+            # the names are additive.
+            "queue": queue, "services": services, "failed_units": len(fails),
+            "failed_unit_names": fails, "alerts": alerts}
 
 
 # 2s snapshot cache: build_status() forks several subprocesses; this caps the

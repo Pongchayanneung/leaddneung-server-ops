@@ -250,7 +250,10 @@
   /* ============================ ALERTS ============================ */
   .alerts { margin-top: var(--gap); display: grid; gap: 0.55rem; }
   .alert {
-    display: flex; align-items: center; gap: 0.7rem;
+    /* flex-start, not center: alert messages NAME the failing units now, so a
+       multi-unit line wraps to 2-3 rows on a phone and a centred tag drifts
+       into the middle of the text. */
+    display: flex; align-items: flex-start; gap: 0.7rem;
     padding: 0.7rem 0.95rem;
     border-radius: var(--radius-sm);
     font-size: 0.86rem;
@@ -266,7 +269,12 @@
     font-family: var(--mono); font-size: 0.68rem; font-weight: 700;
     letter-spacing: 0.12em; text-transform: uppercase;
     padding: 0.2rem 0.5rem; border-radius: 5px; flex: none;
+    margin-top: 0.06rem;   /* optical alignment with the first line of text */
   }
+  /* A flex item will not shrink below its content by default, so a long alert
+     would push the card sideways instead of wrapping. Unit names are one long
+     dotted token, hence `anywhere` rather than `break-word`. */
+  .alert .msg { min-width: 0; overflow-wrap: anywhere; }
   .alert[data-level="warn"] { border-color: color-mix(in oklab, var(--amber) 42%, transparent); }
   .alert[data-level="warn"] .tag { background: color-mix(in oklab, var(--amber) 20%, transparent); color: var(--amber); }
   .alert[data-level="crit"] { border-color: color-mix(in oklab, var(--crit) 42%, transparent); }
@@ -340,6 +348,17 @@
     color: var(--ink-dim);
     font-variant-numeric: tabular-nums;
   }
+  /* Provenance line: quieter than the sub above it, and amber when the number
+     is the nominal rather than an observation — not an error, a confidence
+     signal. Tokens are the ones this sheet actually defines (--ink-faint,
+     --amber); there is no --ok / --muted here. */
+  .readout .sub.prov {
+    margin-top: 0.18rem;
+    font-size: 0.68rem;
+    color: var(--ink-faint);
+    overflow-wrap: anywhere;
+  }
+  .readout .sub.prov[data-src="nominal"] { color: var(--amber); }
 
   /* subtle pulse when a value changes */
   .flash { animation: flash var(--dur) var(--ease); }
@@ -792,6 +811,10 @@
           <div class="readout">
             <div class="value" id="v-tcost">—<span class="unit">/audio-hr</span></div>
             <div class="sub" id="s-tcost">—</div>
+            <!-- Where the wattage behind every baht above came from. A cost
+                 figure with no provenance reads as measured whether it is or
+                 not, which is exactly what this line exists to stop. -->
+            <div class="sub prov" id="s-tcost-src">—</div>
           </div>
         </div>
       </section>
@@ -1133,9 +1156,11 @@
       }
       setText("s-tcost", "฿" + fmtBaht(tc.thb_total) + " total · " + fmt1(tc.audio_hours)
         + " h audio · " + fmt1(tc.realtime_factor) + "× realtime");
+      renderCostProvenance(tc);
     } else {
       setText("v-tcost", "—");
       setText("s-tcost", "no completed jobs logged");
+      renderCostProvenance(null);
     }
 
     // ---- GPU ----
@@ -1269,6 +1294,36 @@
     }).join("");
   }
 
+  // Says whether the wattage behind the cost was MEASURED from recorded history
+  // or is the nominal fallback. Without it the two are indistinguishable on
+  // screen, and a nameplate guess reads as an observation.
+  function renderCostProvenance(tc) {
+    const el = $("s-tcost-src");
+    if (!el) return;
+    if (!tc || typeof tc.busy_watts !== "number") {
+      el.textContent = "—";
+      el.removeAttribute("data-src");
+      el.removeAttribute("title");
+      return;
+    }
+    const w = fmt1(tc.busy_watts) + " W";
+    const n = tc.watts_samples || 0;
+    const thr = fmt1(tc.watts_threshold_pct);
+    if (tc.watts_measured) {
+      el.dataset.src = "measured";
+      el.textContent = w + " measured · " + n + " busy samples";
+      el.title = "Mean wall draw over " + n + " recorded minutes with GPU utilisation at "
+        + thr + "% or above.";
+    } else {
+      el.dataset.src = "nominal";
+      el.textContent = w + " nominal · " + (n ? n + " busy samples" : "no busy samples")
+        + ", need " + (tc.watts_min_samples || "?");
+      el.title = "Not enough recorded busy time to measure this machine's draw ("
+        + n + " samples above " + thr + "% GPU, " + (tc.watts_min_samples || "?")
+        + " required), so the cost rests on the nominal figure, not an observation.";
+    }
+  }
+
   function renderAlerts(list) {
     const wrap = $("alerts");
     const clean = list.filter((a) => a && a.msg);
@@ -1281,7 +1336,7 @@
       const lvl = a.level === "crit" ? "crit" : "warn";
       return '<div class="alert" data-level="' + lvl + '" role="' + (lvl === "crit" ? "alert" : "status") + '">' +
         '<span class="tag">' + (lvl === "crit" ? "CRIT" : "WARN") + '</span>' +
-        '<span>' + escapeHtml(a.msg) + '</span></div>';
+        '<span class="msg">' + escapeHtml(a.msg) + '</span></div>';
     }).join("");
   }
 

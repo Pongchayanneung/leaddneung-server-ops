@@ -10,6 +10,13 @@
 # convention as ~/bin/offsite-backup.sh, which already sources it this way.
 NTFY_FILE="$HOME/.config/leaddneung/ntfy.url"
 NTFY=$([ -r "$NTFY_FILE" ] && cat "$NTFY_FILE")
+# ROTATION TRANSITION: while ntfy.url.old exists, every alert goes to BOTH topics, so a
+# phone still subscribed to the old one keeps receiving. Swapping the topic outright would
+# leave that phone silently receiving nothing, which is the exact failure this box's
+# alerting exists to prevent. TO FINISH THE ROTATION, DELETE ~/.config/leaddneung/ntfy.url.old
+# -- that is all it takes, no code change here.
+NTFY_OLD_FILE="$NTFY_FILE.old"
+NTFY_OLD=$([ -r "$NTFY_OLD_FILE" ] && cat "$NTFY_OLD_FILE")
 
 # A watchdog that cannot alert is BLIND, and that is exactly the class of failure it
 # exists to catch, so a missing config file must never be a silent no-op. offsite-backup.sh
@@ -18,11 +25,21 @@ NTFY=$([ -r "$NTFY_FILE" ] && cat "$NTFY_FILE")
 # unit shows up in `systemctl --user --failed`. One line per run is bounded, not spam.
 [ -n "$NTFY" ] || echo "health-watchdog: NO ntfy URL at $NTFY_FILE - this run CANNOT alert" >&2
 STATE=/tmp/health-state; mkdir -p $STATE
-alert(){ # key, priority, title, body
-  local key="$1" prio="$2" title="$3" body="$4"
+alert(){ # key, priority, title, body   -- fixed 30 min flap guard
+  alert_every 1800 "$@"
+}
+
+# Same as alert() but with a caller-chosen minimum gap. Exists because a fixed
+# interval is wrong for a condition that persists: offsite-backup, blocked on a B2
+# key only a human can create, sent 22 of this box's 24 alerts in one day, one every
+# 31 minutes. Every one of them was TRUE, which is what makes it dangerous. A channel
+# that cries the same true thing 46 times a day gets muted, and then the next real
+# alert lands in a muted channel. Repeat rate has to decay as a fault ages.
+alert_every(){ # interval, key, priority, title, body
+  local interval="$1" key="$2" prio="$3" title="$4" body="$5"
   local last=$(cat "$STATE/$key" 2>/dev/null || echo 0)
   local now=$(date +%s)
-  if [ $((now-last)) -ge 1800 ]; then
+  if [ $((now-last)) -ge "$interval" ]; then
     # No URL: emit the alert to stderr (systemd captures it -> journalctl --user -u
     # health-watchdog) and deliberately DO NOT write the flap-guard state, so the alert
     # fires for real on the first run after the config file comes back.
@@ -30,7 +47,10 @@ alert(){ # key, priority, title, body
       echo "health-watchdog: alert NOT SENT (no ntfy URL) [$prio] $title | $body" >&2
       return 0
     fi
-    curl -s -H "Title: $title" -H "Priority: $prio" -H "Tags: warning" -d "$body" "$NTFY" >/dev/null 2>&1
+    local u
+    for u in "$NTFY" ${NTFY_OLD:+"$NTFY_OLD"}; do
+      curl -s -H "Title: $title" -H "Priority: $prio" -H "Tags: warning" -d "$body" "$u" >/dev/null 2>&1
+    done
     echo $now > "$STATE/$key"
   fi
 }
@@ -87,26 +107,39 @@ while read -r scope unit; do
   key="fail_${scope}_${unit}"
   still_failed[$key]=1
 
-  # Age comes from systemd's own StateChangeTimestamp, not from when this watchdog
-  # first noticed. A locally-tracked clock reported "failing for 0h" on a unit that
-  # had been dead since 05:04, and it would reset on every reboot or state wipe —
-  # understating exactly the outages that matter most.
+  # Age = the EARLIEST evidence of the fault, from two sources that fail differently.
+  # systemd's StateChangeTimestamp survives a state-dir wipe but is rewritten by every
+  # retry, so a timer-driven unit resets to "0h" on each attempt: offsite-backup showed
+  # "19h" at 04:49 and "0h" at 05:21 after its 05:04 retry, and could therefore never
+  # reach the 24h escalation no matter how long it stayed broken. A local first-seen
+  # file has the opposite flaw, resetting on reboot. Taking the older of the two is
+  # correct under both, and only ever understates the age if BOTH were lost.
+  FIRST=$STATE/firstfail; mkdir -p "$FIRST"
+  [ -f "$FIRST/$key" ] || echo "$now" > "$FIRST/$key"
+  seen_epoch=$(cat "$FIRST/$key" 2>/dev/null || echo "$now")
   changed=$(systemctl ${scope:+--$scope} show "$unit" -p StateChangeTimestamp --value 2>/dev/null)
   changed_epoch=$(date -d "$changed" +%s 2>/dev/null || echo "$now")
+  [ "$seen_epoch" -lt "$changed_epoch" ] && changed_epoch=$seen_epoch
   age_h=$(( (now - changed_epoch) / 3600 ))
 
   # A unit broken for a day is a different problem from one that just broke: the
   # first needs you, the second might still self-recover. Escalate on age so a
   # long-running breakage cannot fade into the background at default priority.
-  if [ "$age_h" -ge 24 ]; then
-    prio=urgent; age_txt="failing for ${age_h}h"
-  else
-    prio=high;   age_txt="failing for ${age_h}h"
+  #
+  # The REPEAT RATE decays as the same fault ages, while priority rises. A fresh
+  # failure is news and is worth interrupting you for; a fault you have known about
+  # for a day is a reminder, and reminding someone every 31 minutes is how a channel
+  # gets muted. Fast when it is news, rare when it is a standing item, never silent.
+  if   [ "$age_h" -ge 24 ]; then prio=urgent; iv=43200   # >1 day  -> twice a day
+  elif [ "$age_h" -ge 12 ]; then prio=high;   iv=21600   # >12h    -> every 6h
+  elif [ "$age_h" -ge 2  ]; then prio=high;   iv=7200    # >2h     -> every 2h
+  else                           prio=high;   iv=1800    # fresh   -> every 30 min
   fi
+  age_txt="failing for ${age_h}h"
 
   detail=$(systemctl ${scope:+--$scope} status "$unit" --no-pager 2>/dev/null \
            | grep -iE "^ *(Process|Main PID|Active):" | head -3 | sed 's/^ *//')
-  alert "$key" "$prio" "leaddneung: $unit failed" \
+  alert_every "$iv" "$key" "$prio" "leaddneung: $unit failed" \
         "$unit ($scope) is in failed state, ${age_txt}.
 $detail
 Inspect: systemctl ${scope:+--$scope} status $unit"
@@ -121,7 +154,11 @@ done < <(
 for f in "$STATE"/fail_*; do
   [ -e "$f" ] || continue
   k=$(basename "$f")
-  [ -n "${still_failed[$k]:-}" ] || clear_state "$k"
+  # The first-seen stamp must go too. Leaving it behind would make a unit that broke,
+  # recovered, and broke again inherit the OLD age: it would open at "36h", jump
+  # straight to the twice-a-day rate, and so report a brand new fault both as ancient
+  # and as barely worth mentioning.
+  [ -n "${still_failed[$k]:-}" ] || { clear_state "$k"; rm -f "$STATE/firstfail/$k"; }
 done
 
 # Fail the unit when alerting is unconfigured, so being blind is visible in

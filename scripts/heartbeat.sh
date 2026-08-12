@@ -10,6 +10,13 @@
 # convention as ~/bin/offsite-backup.sh, which already sources it this way.
 NTFY_FILE="$HOME/.config/leaddneung/ntfy.url"
 NTFY=$([ -r "$NTFY_FILE" ] && cat "$NTFY_FILE")
+# ROTATION TRANSITION: while ntfy.url.old exists, the heartbeat goes to BOTH topics, so a
+# phone still subscribed to the old one keeps receiving. A dead-man switch that quietly
+# stopped arriving because the topic moved is indistinguishable from a dead server.
+# TO FINISH THE ROTATION, DELETE ~/.config/leaddneung/ntfy.url.old -- that is all it takes,
+# no code change here.
+NTFY_OLD_FILE="$NTFY_FILE.old"
+NTFY_OLD=$([ -r "$NTFY_OLD_FILE" ] && cat "$NTFY_OLD_FILE")
 
 up=$(uptime -p 2>/dev/null | sed 's/^up //')
 disk=$(df / | awk 'NR==2{print $5}')
@@ -50,4 +57,6 @@ if [ -z "$NTFY" ]; then
   echo "heartbeat: NOT SENT (no ntfy URL at $NTFY_FILE) | ${body}" >&2
   exit 1
 fi
-curl -s -H "Title: leaddneung alive" -H "Priority: low" -H "Tags: ${tag}" -d "${body}" "$NTFY" >/dev/null 2>&1
+for u in "$NTFY" ${NTFY_OLD:+"$NTFY_OLD"}; do
+  curl -s -H "Title: leaddneung alive" -H "Priority: low" -H "Tags: ${tag}" -d "${body}" "$u" >/dev/null 2>&1
+done
