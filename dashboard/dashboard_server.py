@@ -9,6 +9,7 @@ Security: secret-token gate, kill-switch flag, concurrency=1, timeout,
 per-window rate limit, output redaction, append audit log. Runs as the login
 user (sudo stays password-gated, so root fixes are naturally bounded).
 """
+import datetime
 import hmac
 import json
 import os
@@ -32,6 +33,29 @@ CLAUDE_BIN = os.path.join(HOME, ".local", "bin", "claude")
 CMD_TIMEOUT = 180          # seconds per command
 MSG_MAX = 4096             # max message length
 RATE_WINDOW, RATE_MAX = 300, 15  # <=15 commands / 5 min
+
+# Units that sit in the failed state BY DESIGN. This is a headless GPU worker: the
+# XFCE/portal desktop stack is deliberately not running, and these three re-enter
+# `failed` on their own whenever anything pokes a D-Bus portal.
+#
+# WHY THEY ARE DOWNGRADED: with them counted as CRIT the banner read "4 units
+# failed" every single day, three quarters of it noise. A banner that is always red
+# is a banner nobody reads, and that is exactly how the ONE real failure
+# (offsite-backup.service, no off-site copy has ever existed) sat unread for days.
+#
+# They are DOWNGRADED, NEVER HIDDEN: they still ship in failed_unit_names and still
+# get their own info-level alert on the page. Silence is not success -- the goal is
+# to make CRIT mean something again, not to stop reporting.
+EXPECTED_FAILED_UNITS = {
+    "xdg-desktop-portal.service",
+    "xdg-desktop-portal-gtk.service",
+    "xfce4-notifyd.service",
+}
+
+# Local encrypted backup to the external Elements drive, and its off-site mirror.
+BACKUP_UNIT = "leaddneung-backup.service"
+OFFSITE_STAMP = os.path.join(HOME, ".config", "offsite", "last-success")
+BACKUP_STALE_H = 36        # daily job; >36h without success is late, not just idle
 
 _cmd_lock = threading.Lock()   # concurrency = 1
 _rate_hits = []                # timestamps of recent commands
@@ -299,6 +323,97 @@ def failed_units():
                 found.append((parts[0], scope))
     names = [n for n, _ in found]
     return [f"{n} ({s})" if names.count(n) > 1 else n for n, s in found]
+
+
+def _unit_base(name):
+    """Strip the ' (system)'/' (user)' scope tag failed_units() adds on collisions."""
+    return name.split(" (")[0]
+
+
+def split_failed_units(units):
+    """(real, expected) — expected being EXPECTED_FAILED_UNITS, which are down on
+    purpose. Returns two lists so the caller can escalate one and merely report the
+    other; nothing is dropped on the floor."""
+    real, expected = [], []
+    for u in units:
+        (expected if _unit_base(u) in EXPECTED_FAILED_UNITS else real).append(u)
+    return real, expected
+
+
+def _systemd_ts_age_h(ts_raw):
+    """Hours since a systemd timestamp string, or None if it cannot be parsed.
+
+    systemd prints "Fri 2026-08-14 03:40:42 +07". Two traps live in that string:
+    the leading weekday, and a TWO-DIGIT UTC offset. Python's %z accepts +0700 and
+    +07:00 but NOT a bare +07, so the obvious strptime raises ValueError and, if
+    that exception is swallowed, the card silently reads "unknown" forever while
+    the backup is in fact fine. Caught exactly that way in testing -- hence the
+    explicit normalisation rather than a bare try/except.
+    """
+    if not ts_raw:
+        return None
+    # Strip the weekday only when one is actually there. Splitting unconditionally
+    # ate the DATE off a weekday-less string and left "03:40:42", which silently
+    # killed the naive-format fallback below.
+    body = ts_raw.strip()
+    if not re.match(r"\d{4}-\d{2}-\d{2}", body):
+        body = body.split(" ", 1)[1] if " " in body else body
+    body = re.sub(r"([+-]\d{2})$", r"\g<1>00", body.strip())   # +07 -> +0700
+    for fmt in ("%Y-%m-%d %H:%M:%S %z", "%Y-%m-%d %H:%M:%S"):
+        try:
+            parsed = datetime.datetime.strptime(body, fmt)
+        except ValueError:
+            continue
+        if parsed.tzinfo is None:            # naive -> assume this box's local zone
+            parsed = parsed.astimezone()
+        return round((time.time() - parsed.timestamp()) / 3600, 1)
+    return None
+
+
+def backup_status():
+    """Freshness of the local encrypted backup and of its off-site mirror.
+
+    WHY THIS IS ITS OWN CARD: backups are the only state on this box that cannot be
+    reconstructed after the fact, and until now their health was something you had
+    to INFER from a generic failed-unit count. The off-site leg in particular has
+    never once succeeded, which a red "N units failed" pill communicates far worse
+    than a field that just says so.
+
+    Local age comes from the unit's own last exit, not from a stamp file the script
+    writes, so a script that dies before stamping still reads as stale rather than
+    silently inheriting the previous success.
+    """
+    out = {"local": {"state": "unknown", "age_h": None},
+           "offsite": {"state": "unknown", "age_h": None}}
+
+    props = {}
+    for line in _run(["systemctl", "show", BACKUP_UNIT,
+                      "-p", "Result", "-p", "ExecMainExitTimestamp"]).splitlines():
+        k, _, v = line.partition("=")
+        props[k] = v.strip()
+
+    age_h = _systemd_ts_age_h(props.get("ExecMainExitTimestamp", ""))
+
+    result = props.get("Result", "")
+    if result and result != "success":
+        local_state = "fail"
+    elif age_h is None:
+        local_state = "unknown"
+    elif age_h > BACKUP_STALE_H:
+        local_state = "stale"
+    else:
+        local_state = "ok"
+    out["local"] = {"state": local_state, "age_h": age_h, "result": result or None}
+
+    # Off-site: the stamp is written ONLY on a completed sync. Absent means the
+    # mirror has never once finished -- a different and much worse thing than late.
+    try:
+        off_age = round((time.time() - os.stat(OFFSITE_STAMP).st_mtime) / 3600, 1)
+        out["offsite"] = {"state": "stale" if off_age > BACKUP_STALE_H else "ok",
+                          "age_h": off_age}
+    except OSError:
+        out["offsite"] = {"state": "never", "age_h": None}
+    return out
 
 
 def failed_units_msg(units):
@@ -736,9 +851,29 @@ def build_status():
         {"name": "fail2ban", "active": svc_active("fail2ban")},
     ]
     fails = failed_units()
+    real_fails, expected_fails = split_failed_units(fails)
+    bk = backup_status()
     alerts = []
-    if fails:
-        alerts.append({"level": "crit", "msg": failed_units_msg(fails)})
+    if real_fails:
+        alerts.append({"level": "crit", "msg": failed_units_msg(real_fails)})
+    if expected_fails:
+        # info, not warn: these do not colour the health pill at all. See
+        # EXPECTED_FAILED_UNITS for why they are reported but not escalated.
+        alerts.append({"level": "info",
+                       "msg": f"{len(expected_fails)} desktop unit(s) idle by design: "
+                              + ", ".join(expected_fails)})
+    # Backups get their own alerts rather than riding on the unit count, so "the
+    # off-site copy does not exist" is stated in words instead of being a red dot.
+    if bk["local"]["state"] in ("fail", "stale"):
+        age = bk["local"]["age_h"]
+        alerts.append({"level": "crit",
+                       "msg": "Local backup " + ("FAILED" if bk["local"]["state"] == "fail"
+                                                 else f"stale ({age}h)")})
+    if bk["offsite"]["state"] == "never":
+        alerts.append({"level": "warn", "msg": "No off-site backup has ever completed"})
+    elif bk["offsite"]["state"] == "stale":
+        alerts.append({"level": "warn",
+                       "msg": f"Off-site backup stale ({bk['offsite']['age_h']}h)"})
     if disk["pct"] >= 90:
         alerts.append({"level": "crit", "msg": f"Disk {disk['pct']}%"})
     if r["pct"] >= 92:
@@ -763,8 +898,12 @@ def build_status():
             "tailscale": {"status": "connected" if ts_ok else "down", "ip": ts_ip},
             # failed_units stays an INT so any existing scraper keeps working;
             # the names are additive.
+            # failed_units stays the TOTAL so any existing scraper keeps working.
+            # failed_units_real is the one that drives the banner; the difference
+            # between them is EXPECTED_FAILED_UNITS.
             "queue": queue, "services": services, "failed_units": len(fails),
-            "failed_unit_names": fails, "alerts": alerts}
+            "failed_unit_names": fails, "failed_units_real": len(real_fails),
+            "failed_units_expected": expected_fails, "backup": bk, "alerts": alerts}
 
 
 # 2s snapshot cache: build_status() forks several subprocesses; this caps the

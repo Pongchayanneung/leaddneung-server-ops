@@ -279,6 +279,11 @@
   .alert[data-level="warn"] .tag { background: color-mix(in oklab, var(--amber) 20%, transparent); color: var(--amber); }
   .alert[data-level="crit"] { border-color: color-mix(in oklab, var(--crit) 42%, transparent); }
   .alert[data-level="crit"] .tag { background: color-mix(in oklab, var(--crit) 20%, transparent); color: var(--crit); }
+  /* info = reported, not escalated. Deliberately the quietest of the three so it
+     reads as context rather than as another thing demanding attention. */
+  .alert[data-level="info"] { border-color: var(--hairline); }
+  .alert[data-level="info"] .tag { background: color-mix(in oklab, var(--ink-faint) 16%, transparent); color: var(--ink-dim); }
+  .alert[data-level="info"] .msg { color: var(--ink-dim); }
 
   /* ============================ GRID ============================ */
   main { display: grid; gap: var(--gap); margin-top: var(--gap); }
@@ -602,6 +607,26 @@
   footer a.netdata:focus-visible { outline: 2px solid var(--cyan); outline-offset: 2px; }
   footer a.netdata::before { content: "▸"; }
 
+  /* ---- backup card ---- */
+  .backup .value[data-state="ok"]   { color: var(--signal); }
+  .backup .value[data-state="stale"] { color: var(--amber); }
+  .backup .value[data-state="fail"] { color: var(--crit); }
+  .backup-off {
+    display: flex; align-items: baseline; gap: 0.45rem; flex-wrap: wrap;
+    margin-top: 0.5rem; padding-top: 0.5rem; border-top: 1px solid var(--hairline);
+  }
+  .backup-off .bo-label {
+    font-family: var(--mono); font-size: 0.62rem; letter-spacing: 0.09em;
+    color: var(--ink-faint);
+  }
+  .backup-off .bo-val { font-family: var(--mono); font-size: 0.8rem; color: var(--ink-dim); }
+  /* "never" is the state this card was built to make impossible to miss, so it is
+     the one that gets the loud colour -- a backup that has never run off-site is
+     worse than one that is merely late. */
+  .backup-off[data-state="never"] .bo-val { color: var(--crit); font-weight: 600; }
+  .backup-off[data-state="stale"] .bo-val { color: var(--amber); }
+  .backup-off[data-state="ok"]    .bo-val { color: var(--signal); }
+
   /* ============================ RESPONSIVE ============================ */
   @media (max-width: 900px) {
     .stat { grid-column: span 3; }   /* 2 per row */
@@ -610,10 +635,26 @@
     .gpu-inner { grid-template-columns: 1fr; }
     .gpu-ring-wrap { order: -1; }
   }
+  /* Below ~430px a stat card is ~180px wide, and the ring and the readout cannot
+     both have it. Side by side, the text column collapses to ~90px and wraps
+     "156 / 981 GiB" onto three lines. Stacking gives the numbers the full card
+     width and costs only vertical space, which a phone has and a card does not. */
+  @media (max-width: 430px) {
+    .stat-body { flex-direction: column; align-items: flex-start; gap: 0.6rem; }
+    /* Number first, ring under it: the value is what is being read, the ring is
+       decoration for it. (The ring is a bare <svg class="ring"> child of
+       .stat-body -- there is no wrapper element to target.) */
+    .stat-body .readout { order: 1; width: 100%; }
+    .stat-body .ring { order: 2; }
+  }
   @media (max-width: 560px) {
     .bento { grid-template-columns: repeat(2, 1fr); }
     .stat { grid-column: span 1; }
-    .gpu, .queue, .services, .activity { grid-column: 1 / -1; }
+    /* .history MUST be in this list. It is declared `span 6` at desktop width, and
+       an un-overridden `span 6` inside a 2-column grid does not clamp -- CSS Grid
+       creates 4 implicit columns to satisfy it, widening .bento to 6 columns and
+       clipping every other card. That was the whole 375px breakage. */
+    .gpu, .queue, .services, .history, .activity { grid-column: 1 / -1; }
     .gpu-metrics { grid-template-columns: 1fr; }
     .status-col { align-items: flex-start; text-align: left; }
     .masthead { align-items: flex-start; }
@@ -815,6 +856,27 @@
                  figure with no provenance reads as measured whether it is or
                  not, which is exactly what this line exists to stop. -->
             <div class="sub prov" id="s-tcost-src">—</div>
+          </div>
+        </div>
+      </section>
+
+      <!-- BACKUP — the only state on this box that cannot be rebuilt after the
+           fact, so it gets a field that says so in words. Before this card, "is
+           there an off-site copy" was something you inferred from a generic
+           failed-unit count; the honest answer has always been no. -->
+      <section class="card stat backup" aria-labelledby="l-backup">
+        <div class="card-head">
+          <span class="card-label" id="l-backup">Backup</span>
+          <span class="card-glyph">RESTIC</span>
+        </div>
+        <div class="stat-body">
+          <div class="readout">
+            <div class="value" id="v-backup">—<span class="unit">local</span></div>
+            <div class="sub" id="s-backup-local">—</div>
+            <div class="backup-off" id="s-backup-offsite" data-state="unknown">
+              <span class="bo-label">OFF-SITE</span>
+              <span class="bo-val" id="s-backup-offsite-val">—</span>
+            </div>
           </div>
         </div>
       </section>
@@ -1267,6 +1329,7 @@
     renderServices(Array.isArray(d.services) ? d.services : []);
 
     // ---- Alerts ----
+    renderBackup(d.backup);
     renderAlerts(Array.isArray(d.alerts) ? d.alerts : []);
 
     // ---- Footer ----
@@ -1324,6 +1387,41 @@
     }
   }
 
+  // Ages are rendered in whichever unit a human would say out loud: hours up to a
+  // day, then days. "0.3h" and "168h" are both technically correct and both make
+  // the reader do arithmetic before they can react.
+  function agePhrase(h) {
+    if (!isNum(h)) return "unknown";
+    if (h < 1) return Math.max(1, Math.round(h * 60)) + "m ago";
+    if (h < 48) return (h < 10 ? h.toFixed(1) : Math.round(h)) + "h ago";
+    return Math.round(h / 24) + "d ago";
+  }
+
+  function renderBackup(b) {
+    b = b || {};
+    const loc = b.local || {}, off = b.offsite || {};
+    const st = loc.state || "unknown";
+    const val = $("v-backup");
+
+    const LOCAL_WORD = { ok: "OK", stale: "STALE", fail: "FAILED", unknown: "—" };
+    val.innerHTML = '<span>' + (LOCAL_WORD[st] || "—") + '</span><span class="unit">local</span>';
+    val.setAttribute("data-state", st);
+
+    // Name the unit's own verdict, not just our derived one: "success 7h ago" and
+    // "success 40h ago" are the same Result and very different situations.
+    $("s-backup-local").textContent =
+      st === "unknown" ? "no run recorded"
+      : (loc.result ? loc.result + " · " : "") + agePhrase(loc.age_h);
+
+    const offSt = off.state || "unknown";
+    const wrap = $("s-backup-offsite");
+    wrap.setAttribute("data-state", offSt);
+    $("s-backup-offsite-val").textContent =
+      offSt === "never" ? "NEVER RUN"
+      : offSt === "unknown" ? "unknown"
+      : agePhrase(off.age_h);
+  }
+
   function renderAlerts(list) {
     const wrap = $("alerts");
     const clean = list.filter((a) => a && a.msg);
@@ -1332,10 +1430,16 @@
     if (wrap.dataset.sig === sig) { wrap.hidden = false; return; }
     wrap.dataset.sig = sig;
     wrap.hidden = false;
+    // Three levels, not two. "info" exists so a thing can be REPORTED without being
+    // escalated -- the desktop units that are down on purpose are the case it was
+    // added for. computeHealth() only looks at crit/warn, so info never colours the
+    // pill, but it is still on the page. Unknown levels fall back to warn, never to
+    // silence: an alert the server bothered to send must always be visible.
+    const TAG = { crit: "CRIT", warn: "WARN", info: "NOTE" };
     wrap.innerHTML = clean.map((a) => {
-      const lvl = a.level === "crit" ? "crit" : "warn";
+      const lvl = TAG[a.level] ? a.level : "warn";
       return '<div class="alert" data-level="' + lvl + '" role="' + (lvl === "crit" ? "alert" : "status") + '">' +
-        '<span class="tag">' + (lvl === "crit" ? "CRIT" : "WARN") + '</span>' +
+        '<span class="tag">' + TAG[lvl] + '</span>' +
         '<span class="msg">' + escapeHtml(a.msg) + '</span></div>';
     }).join("");
   }
