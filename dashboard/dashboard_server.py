@@ -1102,6 +1102,9 @@ class Handler(BaseHTTPRequestHandler):
                                               "remaining_secs": None,
                                               "progress_pct": 0, "results": [],
                                               "log_tail": [str(err)], "gpu": None}))
+        if path == "/diagram":
+            # leaddneung topology, built from live server state (archify spec beside it)
+            return self._file("diagram.html", "text/html; charset=utf-8")
         if path == "/runbook":
             # runbook.html shipped without a route; wire it up
             return self._file("runbook.html", "text/html; charset=utf-8")
